@@ -1,0 +1,51 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:          # disparo manual pelo GitHub
+  push:
+    tags:
+      - 'v*'                  # ou automaticamente em tags como v1.0.0
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+        with:
+          # Cria um GitHub Release com os instaladores como assets
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Password Keeper ${{ github.ref_name }}'
+          releaseBody: |
+            ## Password Keeper ${{ github.ref_name }}
+
+            ### Instalação (Windows)
+            - Baixe o arquivo `.msi` (recomendado) ou `.exe` (NSIS)
+            - Execute e siga o assistente de instalação
+          releaseDraft: true      # fica como rascunho até você publicar manualmente
+          prerelease: false

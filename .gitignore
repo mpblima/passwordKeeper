@@ -1,0 +1,16 @@
+# IA
+.claude
+
+# Node
+node_modules/
+
+# Build outputs
+dist/
+src-tauri/target/
+
+# Tauri store (dados locais do usuário, não devem ir pro repositório)
+vault-config.json
+
+# Env local (se criar um .env com as credenciais para desenvolvimento)
+.env
+.env.local

@@ -1,0 +1,432 @@
+import { useState } from "react";
+import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, Download, FolderOpen, LogOut } from "lucide-react";
+import { useVaultStore } from "../store/vaultStore";
+import { GroupForm } from "./GroupForm";
+import { GoogleDriveModal } from "./GoogleDriveModal";
+import { ShareModal } from "./ShareModal";
+import { DeletionRequests } from "./DeletionRequests";
+import { AboutScreen } from "./AboutScreen";
+import { ImportSharedFile } from "./ImportSharedFile";
+import { SharedUsersModal } from "./SharedUsersModal";
+import { PasswordGroup } from "../types/vault";
+import { IconDisplay } from "./IconDisplay";
+
+interface SidebarProps {
+  onAddEntry: (groupId?: string) => void;
+}
+
+export function Sidebar({ onAddEntry }: SidebarProps) {
+  const {
+    vault, activeView, selectedGroupId, searchQuery, googleToken, userInfo,
+    isSyncing, isDirty, localVaultPath,
+    setActiveView, selectGroup, setSearchQuery, lockVault,
+    saveToLocalFile, updateEntry,
+  } = useVaultStore();
+
+
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<PasswordGroup | null>(null);
+  const [showDriveModal, setShowDriveModal] = useState(false);
+  const [shareGroup, setShareGroup] = useState<PasswordGroup | null>(null);
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = useState<string | null>(null);
+  const [showDeletionRequests, setShowDeletionRequests] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [showSharedUsers, setShowSharedUsers] = useState(false);
+  const { deleteGroup, currentUserRole, closeVault } = useVaultStore();
+
+  const role = currentUserRole();
+  const isOwner = role === "owner";
+  const pendingDeletionCount = vault?.deletionRequests?.length ?? 0;
+
+  function handleDropOnGroup(e: React.DragEvent, groupId: string | null) {
+    e.preventDefault();
+    const entryId = e.dataTransfer.getData("entryId");
+    if (entryId) updateEntry(entryId, { groupId: groupId ?? undefined });
+  }
+
+  const totalEntries = vault?.entries.length ?? 0;
+  const favoriteCount = vault?.entries.filter((e) => e.favorite).length ?? 0;
+
+  function getGroupEntryCount(groupId: string) {
+    return vault?.entries.filter((e) => e.groupId === groupId).length ?? 0;
+  }
+
+  return (
+    <>
+      <aside className="w-64 flex-shrink-0 flex flex-col h-full bg-vault-sidebar border-r border-vault-border">
+        {/* Logo */}
+        <div className="p-5 border-b border-vault-border">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-vault-primary to-vault-secondary flex items-center justify-center">
+              <ShieldCheck size={18} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-vault-text font-bold text-sm leading-tight">Password Keeper</h1>
+              <p className="text-vault-textMuted text-xs">Cofre seguro</p>
+            </div>
+            {/* Role badge */}
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+              role === "owner"
+                ? "bg-vault-primary/20 text-vault-primary"
+                : role === "editor"
+                ? "bg-vault-success/20 text-vault-success"
+                : "bg-vault-card text-vault-textMuted"
+            }`}>
+              {role === "owner" ? "Proprietário" : role === "editor" ? "Editor" : "Leitura"}
+            </span>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div className="px-4 py-3">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-vault-textMuted" />
+            <input
+              type="text"
+              placeholder="Buscar senhas..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-vault-card border border-vault-border rounded-xl pl-9 pr-3 py-2 text-sm text-vault-text placeholder-vault-textMuted focus:outline-none focus:border-vault-primary transition-colors"
+            />
+          </div>
+        </div>
+
+        {/* Add entry button — hidden for readers */}
+        {role !== "reader" && (
+          <div className="px-4 pb-2">
+            <button
+              onClick={() => onAddEntry()}
+              className="w-full flex items-center justify-center gap-2 py-2.5 bg-vault-primary hover:bg-vault-primaryHover rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg hover:shadow-vault-primary/20"
+            >
+              <Plus size={16} /> Nova Senha
+            </button>
+          </div>
+        )}
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 overflow-y-auto py-2 space-y-0.5">
+          {/* All — also a drop target to remove entry from group */}
+          <NavItem
+            icon={<LayoutGrid size={16} />}
+            label="Todas as Senhas"
+            count={totalEntries}
+            active={activeView === "all"}
+            onClick={() => setActiveView("all")}
+            onDrop={(e) => handleDropOnGroup(e, null)}
+          />
+
+          {/* Favorites */}
+          <NavItem
+            icon={<Star size={16} />}
+            label="Favoritas"
+            count={favoriteCount}
+            active={activeView === "favorites"}
+            onClick={() => setActiveView("favorites")}
+          />
+
+          {/* Groups section */}
+          <div className="pt-3 pb-1">
+            <div className="flex items-center justify-between px-2 mb-1">
+              <span className="text-xs font-semibold text-vault-textMuted uppercase tracking-wider">
+                Grupos
+              </span>
+              <button
+                onClick={() => setShowGroupForm(true)}
+                className="p-1 rounded-lg text-vault-textMuted hover:text-vault-primary hover:bg-vault-primary/10 transition-colors"
+                title="Novo grupo"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+
+            {vault?.groups.length === 0 && (
+              <p className="text-xs text-vault-textMuted px-2 py-2">
+                Nenhum grupo criado
+              </p>
+            )}
+
+            {vault?.groups.map((group) => (
+              <GroupNavItem
+                key={group.id}
+                group={group}
+                count={getGroupEntryCount(group.id)}
+                active={activeView === "group" && selectedGroupId === group.id}
+                onClick={() => selectGroup(group.id)}
+                onEdit={() => { setEditingGroup(group); setShowGroupForm(true); }}
+                onShare={() => setShareGroup(group)}
+                onDelete={() => setConfirmDeleteGroup(group.id)}
+                onAddEntry={() => onAddEntry(group.id)}
+                onDrop={(e) => handleDropOnGroup(e, group.id)}
+              />
+            ))}
+          </div>
+        </nav>
+
+        {/* Bottom actions */}
+        <div className="border-t border-vault-border p-3 space-y-1">
+
+          {/* Save locally */}
+          <button
+            onClick={() => saveToLocalFile()}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-colors hover:bg-vault-card"
+          >
+            <HardDrive size={16} className={localVaultPath ? "text-amber-400" : "text-vault-textMuted"} />
+            <span className={`flex-1 text-left truncate text-xs ${localVaultPath ? "text-vault-textSecondary" : "text-vault-textMuted"}`}>
+              {localVaultPath
+                ? localVaultPath.split(/[\\/]/).pop()
+                : "Salvar localmente..."}
+            </span>
+            {isDirty && localVaultPath && (
+              <span className="w-2 h-2 rounded-full bg-vault-warning flex-shrink-0" title="Alterações não salvas" />
+            )}
+          </button>
+
+          {/* Google Drive */}
+          {googleToken ? (
+            <div className="flex items-center gap-1 px-3 py-2 rounded-xl hover:bg-vault-card transition-colors">
+              <Cloud size={16} className="text-vault-primary flex-shrink-0" />
+              <button
+                onClick={() => setShowDriveModal(true)}
+                className="flex-1 text-left truncate text-xs text-vault-textSecondary min-w-0"
+              >
+                {userInfo?.email ?? "Drive conectado"}
+              </button>
+              {isSyncing && (
+                <span className="w-3 h-3 rounded-full border border-vault-primary border-t-transparent animate-spin flex-shrink-0" />
+              )}
+              <button
+                onClick={() => { useVaultStore.getState().setGoogleToken(null); useVaultStore.getState().setUserInfo(null); useVaultStore.getState().setDriveFileId(null); }}
+                className="p-1 rounded text-vault-textMuted hover:text-vault-danger transition-colors flex-shrink-0"
+                title="Desconectar conta Google"
+              >
+                <LogOut size={13} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowDriveModal(true)}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-colors hover:bg-vault-card"
+            >
+              <Cloud size={16} className="text-vault-textMuted" />
+              <span className="flex-1 text-left truncate text-xs text-vault-textMuted">Google Drive</span>
+            </button>
+          )}
+
+          {/* Deletion requests — only visible to owner when there are pending ones */}
+          {isOwner && pendingDeletionCount > 0 && (
+            <button
+              onClick={() => setShowDeletionRequests(true)}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm bg-vault-warning/10 border border-vault-warning/30 text-vault-warning hover:bg-vault-warning/20 transition-colors"
+            >
+              <Flag size={16} />
+              <span className="flex-1 text-left text-xs">Solicitações de exclusão</span>
+              <span className="w-5 h-5 rounded-full bg-vault-warning text-white text-xs flex items-center justify-center font-bold">
+                {pendingDeletionCount}
+              </span>
+            </button>
+          )}
+
+          {/* Manage shared users — owner only */}
+          {isOwner && (
+            <button
+              onClick={() => setShowSharedUsers(true)}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
+            >
+              <Share2 size={16} />
+              <span className="flex-1 text-left">Compartilhar com...</span>
+              {(vault?.sharedWith?.length ?? 0) > 0 && (
+                <span className="text-xs px-1.5 py-0.5 rounded-full bg-vault-card text-vault-textMuted">
+                  {vault!.sharedWith.length}
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* Import shared file */}
+          <button
+            onClick={() => setShowImport(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
+          >
+            <Download size={16} />
+            Importar compartilhamento
+          </button>
+
+          {/* About */}
+          <button
+            onClick={() => setShowAbout(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
+          >
+            <Info size={16} />
+            Sobre o aplicativo
+          </button>
+
+          {/* Close vault (open another) */}
+          <button
+            onClick={closeVault}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
+          >
+            <FolderOpen size={16} />
+            Fechar e abrir outro cofre
+          </button>
+
+          {/* Lock */}
+          <button
+            onClick={lockVault}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10 transition-colors"
+          >
+            <Lock size={16} />
+            Bloquear cofre
+          </button>
+        </div>
+      </aside>
+
+      {/* Modals */}
+      {showGroupForm && (
+        <GroupForm
+          group={editingGroup ?? undefined}
+          onClose={() => { setShowGroupForm(false); setEditingGroup(null); }}
+        />
+      )}
+      {showDriveModal && <GoogleDriveModal onClose={() => setShowDriveModal(false)} />}
+      {shareGroup && (
+        <ShareModal target={shareGroup} type="group" onClose={() => setShareGroup(null)} />
+      )}
+      {showDeletionRequests && <DeletionRequests onClose={() => setShowDeletionRequests(false)} />}
+      {showAbout && <AboutScreen onClose={() => setShowAbout(false)} />}
+      {showImport && <ImportSharedFile onClose={() => setShowImport(false)} />}
+      {showSharedUsers && <SharedUsersModal onClose={() => setShowSharedUsers(false)} />}
+
+      {/* Delete group confirm */}
+      {confirmDeleteGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-vault-card border border-vault-border rounded-2xl p-6 w-80 shadow-2xl">
+            <h3 className="text-vault-text font-semibold mb-2">Excluir grupo?</h3>
+            <p className="text-vault-textMuted text-sm mb-4">
+              As senhas do grupo não serão excluídas, apenas desvinculadas.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDeleteGroup(null)}
+                className="flex-1 py-2 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textMuted text-sm"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => { deleteGroup(confirmDeleteGroup); setConfirmDeleteGroup(null); }}
+                className="flex-1 py-2 bg-vault-danger/20 border border-vault-danger/40 rounded-xl text-vault-danger text-sm font-medium"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Sub-components ─────────────────────────────────────────────────────────
+
+interface NavItemProps {
+  icon: React.ReactNode;
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+  onDrop?: (e: React.DragEvent) => void;
+}
+
+function NavItem({ icon, label, count, active, onClick, onDrop }: NavItemProps) {
+  const [dragOver, setDragOver] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onDragOver={(e) => { if (onDrop) { e.preventDefault(); setDragOver(true); } }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => { setDragOver(false); onDrop?.(e); }}
+      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-all ${
+        dragOver
+          ? "bg-vault-primary/20 border border-vault-primary/40 text-vault-primary"
+          : active
+          ? "bg-vault-primary/15 text-vault-primary border border-vault-primary/20"
+          : "text-vault-textMuted hover:bg-vault-card hover:text-vault-text"
+      }`}
+    >
+      {icon}
+      <span className="flex-1 text-left">{label}</span>
+      {dragOver && <span className="text-xs text-vault-primary">Soltar aqui</span>}
+      {!dragOver && count !== undefined && (
+        <span className={`text-xs px-1.5 py-0.5 rounded-full ${active ? "bg-vault-primary/20 text-vault-primary" : "bg-vault-card text-vault-textMuted"}`}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+interface GroupNavItemProps {
+  group: PasswordGroup;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  onEdit: () => void;
+  onShare: () => void;
+  onDelete: () => void;
+  onAddEntry: () => void;
+  onDrop: (e: React.DragEvent) => void;
+}
+
+function GroupNavItem({ group, count, active, onClick, onEdit, onShare, onDelete, onAddEntry, onDrop }: GroupNavItemProps) {
+  const [showActions, setShowActions] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setShowActions(true)}
+      onMouseLeave={() => setShowActions(false)}
+    >
+      <button
+        onClick={onClick}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { setDragOver(false); onDrop(e); }}
+        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-all border ${
+          dragOver
+            ? "bg-vault-primary/20 border-vault-primary/50 text-vault-primary"
+            : active
+            ? "bg-vault-primary/15 text-vault-primary border-vault-primary/20"
+            : "border-transparent text-vault-textMuted hover:bg-vault-card hover:text-vault-text"
+        }`}
+      >
+        <span className="w-5 h-5 flex items-center justify-center flex-shrink-0">
+          <IconDisplay icon={group.icon} size="w-5 h-5" />
+        </span>
+        <span className="flex-1 text-left truncate">{group.name}</span>
+        {dragOver ? (
+          <span className="text-xs text-vault-primary font-medium">Mover aqui</span>
+        ) : showActions ? (
+          <div className="flex gap-0.5" onClick={(e) => e.stopPropagation()}>
+            <button onClick={onAddEntry} title="Adicionar senha neste grupo" className="p-1 rounded hover:bg-vault-success/20 hover:text-vault-success transition-colors">
+              <Plus size={12} />
+            </button>
+            <button onClick={onEdit} className="p-1 rounded hover:bg-vault-primary/20 hover:text-vault-primary transition-colors">
+              <Edit size={12} />
+            </button>
+            <button onClick={onShare} className="p-1 rounded hover:bg-vault-accent/20 hover:text-vault-accent transition-colors">
+              <Share2 size={12} />
+            </button>
+            <button onClick={onDelete} className="p-1 rounded hover:bg-vault-danger/20 hover:text-vault-danger transition-colors">
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ) : (
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${active ? "bg-vault-primary/20 text-vault-primary" : "bg-vault-card text-vault-textMuted"}`}>
+            {count}
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
