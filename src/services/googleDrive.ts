@@ -74,7 +74,7 @@ export async function startOAuthFlow(forceConsent = true): Promise<GoogleToken> 
 
       // Register listener BEFORE opening browser to avoid race condition
       onOpenUrl((urls) => {
-        const callbackUrl = urls.find((u) => u.startsWith("passwordkeeper://oauth2callback"));
+        const callbackUrl = urls.find((u) => u.startsWith("com.googleusercontent.apps."));
         if (!callbackUrl) return;
 
         clearTimeout(timer);

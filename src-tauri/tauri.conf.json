@@ -44,8 +44,8 @@
     "deep-link": {
       "mobile": [
         {
-          "scheme": "passwordkeeper",
-          "host": "oauth2callback"
+          "scheme": ["com.googleusercontent.apps.288890427052-gp0llktopdorl4mfdf1oj99dprq34ivq"],
+          "host": "oauth2redirect"
         }
       ]
     }

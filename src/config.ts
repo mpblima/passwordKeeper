@@ -23,5 +23,5 @@ export const VAULT_DRIVE_FILENAME = "meu-cofre.keep";
 // Porta local para o callback OAuth no desktop (deve bater com o redirect URI acima)
 export const OAUTH_PORT = 8899;
 
-// Scheme do deep link para OAuth no mobile
-export const OAUTH_MOBILE_REDIRECT = "passwordkeeper://oauth2callback";
+// Scheme do deep link para OAuth no mobile (reverse client ID — exigido pelo Google no Android)
+export const OAUTH_MOBILE_REDIRECT = "com.googleusercontent.apps.288890427052-gp0llktopdorl4mfdf1oj99dprq34ivq:/oauth2redirect";
