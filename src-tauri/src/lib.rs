@@ -4,67 +4,50 @@ use tokio::net::TcpListener;
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────
 
-/// Opens the system browser and handles the OAuth redirect.
-///
-/// - **Desktop**: starts a local HTTP server on `port`, captures the redirect query-string.
-/// - **Mobile**: opens the browser via the opener plugin and returns the sentinel
-///   `"__mobile_deep_link__"`. The frontend then listens for the deep link event.
+/// Opens the system browser, starts a local HTTP server on `port`,
+/// and returns the raw query-string from the OAuth redirect.
 #[tauri::command]
-async fn start_oauth(app: tauri::AppHandle, auth_url: String, port: u16) -> Result<String, String> {
-    #[cfg(mobile)]
-    {
-        use tauri_plugin_opener::OpenerExt;
-        app.opener()
-            .open_url(&auth_url, None::<&str>)
-            .map_err(|e| format!("Não foi possível abrir o navegador: {}", e))?;
-        return Ok("__mobile_deep_link__".to_string());
-    }
-
-    #[cfg(not(mobile))]
-    {
-        // Suppress unused warning on desktop (app handle not needed for TCP approach)
-        let _ = &app;
-
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-            .await
-            .map_err(|e| format!("Não foi possível abrir porta {}: {}", port, e))?;
-
-        open_browser(&auth_url)?;
-
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            listener.accept(),
-        )
+async fn start_oauth(auth_url: String, port: u16) -> Result<String, String> {
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
-        .map_err(|_| "Tempo esgotado aguardando autorização do Google".to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Não foi possível abrir porta {}: {}", port, e))?;
 
-        let mut reader = BufReader::new(stream);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line).await.map_err(|e| e.to_string())?;
+    open_browser(&auth_url)?;
 
-        // Extract query string from the request line
-        let line = request_line.trim();
-        let query_string = if let Some(path_start) = line.find('/') {
-            let path_part = &line[path_start..];
-            if let Some(path_end) = path_part.find(' ') {
-                let full_path = &path_part[..path_end];
-                full_path.find('?').map(|q| full_path[q + 1..].to_string())
-            } else {
-                None
-            }
+    let (stream, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        listener.accept(),
+    )
+    .await
+    .map_err(|_| "Tempo esgotado aguardando autorização do Google".to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let mut reader = BufReader::new(stream);
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).await.map_err(|e| e.to_string())?;
+
+    // Extract query string from the request line
+    let line = request_line.trim();
+    let query_string = if let Some(path_start) = line.find('/') {
+        let path_part = &line[path_start..];
+        if let Some(path_end) = path_part.find(' ') {
+            let full_path = &path_part[..path_end];
+            full_path.find('?').map(|q| full_path[q + 1..].to_string())
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
-        // Check if the redirect contains an error (e.g. user cancelled)
-        let is_error = query_string
-            .as_deref()
-            .map(|q| q.contains("error="))
-            .unwrap_or(true);
+    // Check if the redirect contains an error (e.g. user cancelled)
+    let is_error = query_string
+        .as_deref()
+        .map(|q| q.contains("error="))
+        .unwrap_or(true);
 
-        let html_body = if is_error {
-            r#"<!DOCTYPE html>
+    let html_body = if is_error {
+        r#"<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><title>Password Keeper</title>
@@ -85,8 +68,8 @@ async fn start_oauth(app: tauri::AppHandle, auth_url: String, port: u16) -> Resu
   </div>
 </body>
 </html>"#
-        } else {
-            r#"<!DOCTYPE html>
+    } else {
+        r#"<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><title>Password Keeper</title>
@@ -107,32 +90,25 @@ async fn start_oauth(app: tauri::AppHandle, auth_url: String, port: u16) -> Resu
   </div>
 </body>
 </html>"#
-        };
+    };
 
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            html_body.len(),
-            html_body
-        );
-        reader
-            .get_mut()
-            .write_all(response.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html_body.len(),
+        html_body
+    );
+    reader.get_mut().write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
 
-        if is_error {
-            return Err("Autorização cancelada pelo usuário".to_string());
-        }
+    if is_error {
+        return Err("Autorização cancelada pelo usuário".to_string());
+    }
 
-        match query_string {
-            Some(qs) => Ok(qs),
-            None => Err("Não foi possível extrair o código de autorização".to_string()),
-        }
+    match query_string {
+        Some(qs) => Ok(qs),
+        None => Err("Não foi possível extrair o código de autorização".to_string()),
     }
 }
 
-/// Opens the default browser on desktop platforms.
-#[cfg(not(mobile))]
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -149,10 +125,7 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        std::process::Command::new("open").arg(url).spawn().map_err(|e| e.to_string())?;
         return Ok(());
     }
     #[cfg(target_os = "windows")]
@@ -171,39 +144,24 @@ fn open_browser(url: &str) -> Result<(), String> {
 
 /// Open a native file dialog to pick a PNG/JPG image and return it as a
 /// base64 data-URL (e.g. "data:image/png;base64,...").
-/// Only available on desktop — returns None on mobile.
 #[tauri::command]
 async fn pick_and_read_image() -> Result<Option<String>, String> {
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        // Image picker via rfd is not available on mobile.
-        // The frontend should handle this gracefully (e.g. hide the button).
-        return Ok(None);
-    }
+    let path = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("Imagens (PNG, JPG)", &["png", "jpg", "jpeg"])
+            .pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let path = tokio::task::spawn_blocking(|| {
-            rfd::FileDialog::new()
-                .add_filter("Imagens (PNG, JPG)", &["png", "jpg", "jpeg"])
-                .pick_file()
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-        match path {
-            None => Ok(None),
-            Some(p) => {
-                let ext = p
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("jpg")
-                    .to_lowercase();
-                let mime = if ext == "png" { "image/png" } else { "image/jpeg" };
-                let data = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                Ok(Some(format!("data:{};base64,{}", mime, b64)))
-            }
+    match path {
+        None => Ok(None),
+        Some(p) => {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("jpg").to_lowercase();
+            let mime = if ext == "png" { "image/png" } else { "image/jpeg" };
+            let data = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            Ok(Some(format!("data:{};base64,{}", mime, b64)))
         }
     }
 }
@@ -211,29 +169,22 @@ async fn pick_and_read_image() -> Result<Option<String>, String> {
 /// Write text content to a file path.
 #[tauri::command]
 async fn write_file(path: String, content: String) -> Result<(), String> {
-    tokio::fs::write(&path, content.as_bytes())
-        .await
-        .map_err(|e| e.to_string())
+    tokio::fs::write(&path, content.as_bytes()).await.map_err(|e| e.to_string())
 }
 
 /// Read text content from a file path.
 #[tauri::command]
 async fn read_file(path: String) -> Result<String, String> {
-    tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| e.to_string())
+    tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_os::init())
         .invoke_handler(tauri::generate_handler![
             start_oauth,
             write_file,

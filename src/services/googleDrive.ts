@@ -1,8 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { platform } from "@tauri-apps/plugin-os";
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { GoogleToken } from "../types/vault";
-import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, VAULT_DRIVE_FILENAME, OAUTH_PORT, OAUTH_MOBILE_REDIRECT } from "../config";
+import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, VAULT_DRIVE_FILENAME, OAUTH_PORT } from "../config";
 
 const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email";
 
@@ -30,20 +28,16 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 // ─── OAuth ────────────────────────────────────────────────────────────────────
 
 /**
- * Starts the OAuth PKCE flow and opens the browser.
+ * Starts the OAuth PKCE flow.
+ * Opens the system browser, starts a TCP listener on localhost:8899,
+ * and waits for the redirect from Google.
  * `forceConsent` should be true only the very first time (to obtain a refresh_token).
- *
- * - Desktop: opens browser + TCP listener on localhost:8899, waits for redirect.
- * - Mobile: opens browser → waits for deep link `passwordkeeper://oauth2callback`.
  */
 export async function startOAuthFlow(forceConsent = true): Promise<GoogleToken> {
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
   const state = crypto.randomUUID();
-
-  const os = await platform();
-  const isMobile = os === "android" || os === "ios";
-  const redirectUri = isMobile ? OAUTH_MOBILE_REDIRECT : `http://localhost:${OAUTH_PORT}`;
+  const redirectUri = `http://localhost:${OAUTH_PORT}`;
 
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -54,58 +48,11 @@ export async function startOAuthFlow(forceConsent = true): Promise<GoogleToken> 
     code_challenge_method: "S256",
     state,
     access_type: "offline",
-    // Only force consent screen on first login so we get a refresh_token.
     ...(forceConsent ? { prompt: "consent" } : {}),
   });
 
   const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-
-  let queryString: string;
-
-  if (isMobile) {
-    // ── Mobile: open browser, wait for deep link callback ──────────────────
-    queryString = await new Promise<string>((resolve, reject) => {
-      let unlistenFn: (() => void) | null = null;
-
-      const timer = setTimeout(() => {
-        if (unlistenFn) unlistenFn();
-        reject(new Error("Tempo esgotado aguardando autorização do Google"));
-      }, 120_000);
-
-      // Register listener BEFORE opening browser to avoid race condition
-      onOpenUrl((urls) => {
-        const callbackUrl = urls.find((u) => u.startsWith("com.googleusercontent.apps."));
-        if (!callbackUrl) return;
-
-        clearTimeout(timer);
-        if (unlistenFn) unlistenFn();
-
-        try {
-          const url = new URL(callbackUrl);
-          if (url.searchParams.get("error")) {
-            reject(new Error("Autorização cancelada pelo usuário"));
-          } else {
-            resolve(url.search.slice(1)); // query string without leading '?'
-          }
-        } catch (e) {
-          reject(e);
-        }
-      })
-        .then((fn) => {
-          unlistenFn = fn;
-          // Now open browser (returns "__mobile_deep_link__" sentinel)
-          return invoke<string>("start_oauth", { authUrl, port: 0 });
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          if (unlistenFn) unlistenFn();
-          reject(err);
-        });
-    });
-  } else {
-    // ── Desktop: TCP listener on localhost ─────────────────────────────────
-    queryString = await invoke<string>("start_oauth", { authUrl, port: OAUTH_PORT });
-  }
+  const queryString = await invoke<string>("start_oauth", { authUrl, port: OAUTH_PORT });
 
   const callbackParams = new URLSearchParams(queryString);
   const code = callbackParams.get("code");

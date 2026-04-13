@@ -1,8 +1,9 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Default capabilities for Password Keeper",
-  "windows": ["main"],
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Capabilities for Android and iOS",
+  "platforms": ["android", "iOS"],
+  "webviews": ["main"],
   "permissions": [
     "core:path:default",
     "core:event:default",
@@ -10,11 +11,10 @@
     "core:app:default",
     "core:image:default",
     "core:resources:default",
-    "core:menu:default",
-    "core:tray:default",
     "opener:default",
     "store:default",
     "dialog:default",
+    "deep-link:default",
     "os:default"
   ]
 }
