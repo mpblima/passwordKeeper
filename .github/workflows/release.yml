@@ -77,6 +77,20 @@ jobs:
       - name: Instalar dependências Node
         run: npm ci
 
+      - name: Sincronizar versão com a tag
+        run: |
+          node -e "
+            const fs = require('fs');
+            const ver = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.version = ver;
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+            let cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+            cargo = cargo.replace(/^version = \"[^\"]+\"/m, 'version = \"' + ver + '\"');
+            fs.writeFileSync('src-tauri/Cargo.toml', cargo);
+            console.log('Versão atualizada para', ver);
+          "
+
       - name: Build e publicar na release
         uses: tauri-apps/tauri-action@v0
         env:
