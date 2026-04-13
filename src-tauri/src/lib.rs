@@ -178,6 +178,12 @@ async fn read_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
 }
 
+/// Encerra o processo imediatamente.
+#[tauri::command]
+fn exit_app() {
+    std::process::exit(0);
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -190,6 +196,7 @@ pub fn run() {
             write_file,
             read_file,
             pick_and_read_image,
+            exit_app,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao iniciar o Password Keeper");

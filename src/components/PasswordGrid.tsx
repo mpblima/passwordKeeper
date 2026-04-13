@@ -50,7 +50,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
 
     return (
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="px-6 py-4 border-b border-vault-border flex items-center gap-4">
+        <div className="px-4 sm:px-6 py-4 border-b border-vault-border flex items-center gap-4">
           <button
             onClick={() => selectGroup(null)}
             className="flex items-center gap-1.5 text-vault-textMuted hover:text-vault-text transition-colors text-sm"
@@ -65,7 +65,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
           <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {filtered.length === 0 ? (
             <EmptyState
               message={searchQuery ? "Nenhum resultado" : "Nenhuma senha neste grupo"}
@@ -73,7 +73,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
               onAdd={canAdd ? () => onAddEntry(selectedGroupId) : undefined}
             />
           ) : viewMode === "grid" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
               {filtered.map((entry) => (
                 <EntryCard key={entry.id} entry={entry} selected={selectedEntryId === entry.id}
                   onSelect={() => selectEntry(entry.id === selectedEntryId ? null : entry.id)}
@@ -99,18 +99,18 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
     const entries = getFilteredEntries();
     return (
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="px-6 py-4 border-b border-vault-border flex items-center gap-4">
+        <div className="px-4 sm:px-6 py-4 border-b border-vault-border flex items-center gap-4">
           <div className="flex-1">
             <h2 className="text-vault-text font-semibold text-lg">Favoritas</h2>
             <p className="text-vault-textMuted text-sm">{entries.length} senha{entries.length !== 1 ? "s" : ""}</p>
           </div>
           <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {entries.length === 0 ? (
             <EmptyState message="Nenhum favorito" hint="Marque senhas com ⭐" />
           ) : viewMode === "grid" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
               {entries.map((entry) => (
                 <EntryCard key={entry.id} entry={entry} selected={selectedEntryId === entry.id}
                   onSelect={() => selectEntry(entry.id === selectedEntryId ? null : entry.id)}
@@ -148,7 +148,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
-      <div className="px-6 py-4 border-b border-vault-border flex items-center gap-4">
+      <div className="px-4 sm:px-6 py-4 border-b border-vault-border flex items-center gap-4">
         <div className="flex-1">
           <h2 className="text-vault-text font-semibold text-lg">Cofre</h2>
           <p className="text-vault-textMuted text-sm">
@@ -158,7 +158,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
         <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-8">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-8">
         {totalVisible === 0 && searchQuery ? (
           <EmptyState message="Nenhum resultado" hint="Tente outros termos" />
         ) : (
@@ -168,7 +168,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
               <section>
                 <p className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-3">Grupos</p>
                 {viewMode === "grid" ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
                     {filteredGroups.map((group) => (
                       <GroupCard
                         key={group.id}
@@ -200,7 +200,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
               <section>
                 <p className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-3">Sem grupo</p>
                 {viewMode === "grid" ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
                     {filteredUngrouped.map((entry) => (
                       <EntryCard key={entry.id} entry={entry} selected={selectedEntryId === entry.id}
                         onSelect={() => selectEntry(entry.id === selectedEntryId ? null : entry.id)}

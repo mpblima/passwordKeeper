@@ -1,43 +1,15 @@
-import { X, ShieldCheck, Lock, Cloud, Share2, Users, Key, Github } from "lucide-react";
+import { X, ShieldCheck, Mail, Github, Lock, HardDrive, Cloud, Share2 } from "lucide-react";
 
 interface AboutScreenProps {
   onClose: () => void;
 }
 
-const APP_VERSION = "0.1.0";
-
-const FEATURES = [
-  {
-    icon: <Lock size={18} />,
-    title: "Criptografia AES-256-GCM",
-    desc: "Todas as senhas são criptografadas localmente com sua senha mestra antes de qualquer armazenamento.",
-  },
-  {
-    icon: <Cloud size={18} />,
-    title: "Sincronização com Google Drive",
-    desc: "Faça backup e acesse seu cofre de qualquer dispositivo via Google Drive.",
-  },
-  {
-    icon: <Share2 size={18} />,
-    title: "Compartilhamento seguro",
-    desc: "Compartilhe senhas ou grupos com controle de permissões: leitura, edição ou proprietário.",
-  },
-  {
-    icon: <Users size={18} />,
-    title: "Controle de acesso",
-    desc: "Somente o proprietário pode excluir senhas. Editores podem solicitar exclusão para revisão.",
-  },
-  {
-    icon: <Key size={18} />,
-    title: "Gerador de senhas",
-    desc: "Gere senhas fortes e seguras com configurações personalizadas diretamente no aplicativo.",
-  },
-];
+const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.1.5";
 
 export function AboutScreen({ onClose }: AboutScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-vault-card border border-vault-border rounded-2xl w-full max-w-lg mx-4 shadow-2xl animate-slide-up max-h-[90vh] flex flex-col">
+      <div className="bg-vault-card border border-vault-border rounded-2xl w-full max-w-md mx-4 shadow-2xl animate-slide-up max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-vault-border flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -49,72 +21,73 @@ export function AboutScreen({ onClose }: AboutScreenProps) {
               <p className="text-vault-textMuted text-sm">Versão {APP_VERSION}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-vault-textMuted hover:text-vault-text transition-colors">
-            <X size={20} />
+          <button onClick={onClose} className="p-2 rounded-xl text-vault-textMuted hover:text-vault-text hover:bg-vault-sidebar transition-colors">
+            <X size={18} />
           </button>
         </div>
 
         {/* Body */}
-        <div className="overflow-y-auto flex-1 p-6 space-y-6">
+        <div className="overflow-y-auto flex-1 p-6 space-y-5">
           {/* Description */}
-          <div className="p-4 bg-vault-sidebar border border-vault-border rounded-xl">
-            <p className="text-vault-textSecondary text-sm leading-relaxed">
-              <strong className="text-vault-text">Password Keeper</strong> é um cofre de senhas seguro e offline-first
-              para guardar, organizar e compartilhar credenciais com total controle e privacidade.
-              Suas senhas nunca saem do seu dispositivo sem criptografia — nem mesmo para o Google Drive.
-            </p>
-          </div>
+          <p className="text-vault-textSecondary text-sm leading-relaxed">
+            Cofre de senhas seguro para guardar, organizar e compartilhar credenciais.
+            Suas senhas são sempre criptografadas no seu dispositivo — nenhum dado é enviado sem proteção.
+          </p>
 
-          {/* Features */}
+          {/* Security info */}
           <div>
-            <h3 className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-3">
-              Funcionalidades
-            </h3>
-            <div className="space-y-3">
-              {FEATURES.map((feat, i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-vault-primary/15 flex items-center justify-center flex-shrink-0 text-vault-primary">
-                    {feat.icon}
-                  </div>
-                  <div>
-                    <p className="text-vault-text text-sm font-medium">{feat.title}</p>
-                    <p className="text-vault-textMuted text-xs mt-0.5 leading-relaxed">{feat.desc}</p>
-                  </div>
-                </div>
-              ))}
+            <p className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-2.5">Segurança</p>
+            <div className="space-y-2">
+              <InfoRow
+                icon={<Lock size={15} className="text-vault-primary" />}
+                label="Criptografia"
+                value="AES-256-GCM — padrão militar, usado por bancos e governos"
+              />
+              <InfoRow
+                icon={<ShieldCheck size={15} className="text-vault-primary" />}
+                label="Senha mestra"
+                value="Nunca armazenada — derivada com PBKDF2 (310.000 iterações)"
+              />
+              <InfoRow
+                icon={<HardDrive size={15} className="text-vault-primary" />}
+                label="Armazenamento local"
+                value="Arquivo .keep criptografado no seu computador"
+              />
+              <InfoRow
+                icon={<Cloud size={15} className="text-vault-primary" />}
+                label="Google Drive"
+                value="Backup opcional — arquivo sempre criptografado antes do envio"
+              />
+              <InfoRow
+                icon={<Share2 size={15} className="text-vault-primary" />}
+                label="Compartilhamento"
+                value="Arquivo .pks protegido por senha separada"
+              />
             </div>
           </div>
 
-          {/* Tech info */}
+          {/* Developer */}
           <div>
-            <h3 className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-3">
-              Informações técnicas
-            </h3>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              {[
-                ["Versão", APP_VERSION],
-                ["Plataforma", "Tauri 2 (Rust + React)"],
-                ["Criptografia", "AES-256-GCM"],
-                ["Derivação de chave", "PBKDF2 / 310.000 iterações"],
-                ["Armazenamento", "Local (.keep) + Google Drive"],
-                ["Autenticação", "OAuth 2.0 PKCE"],
-              ].map(([label, value]) => (
-                <div key={label} className="p-2.5 bg-vault-sidebar border border-vault-border rounded-lg">
-                  <p className="text-vault-textMuted">{label}</p>
-                  <p className="text-vault-text font-medium mt-0.5">{value}</p>
-                </div>
-              ))}
+            <p className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-2.5">Desenvolvedor</p>
+            <div className="p-4 bg-vault-sidebar border border-vault-border rounded-xl space-y-2.5">
+              <p className="text-vault-text font-medium text-sm">Marcelo Lima</p>
+              <div className="flex items-center gap-2 text-vault-textSecondary text-sm">
+                <Mail size={14} className="text-vault-textMuted flex-shrink-0" />
+                <a href="mailto:mpblima@gmail.com" className="hover:text-vault-primary transition-colors truncate">
+                  mpblima@gmail.com
+                </a>
+              </div>
+              <div className="flex items-center gap-2 text-vault-textSecondary text-sm">
+                <Github size={14} className="text-vault-textMuted flex-shrink-0" />
+                <a href="https://github.com/mpblima" className="hover:text-vault-primary transition-colors truncate">
+                  github.com/mpblima
+                </a>
+              </div>
             </div>
-          </div>
-
-          {/* License */}
-          <div className="flex items-center gap-2 text-xs text-vault-textMuted">
-            <Github size={13} />
-            <span>Código aberto · Licença MIT</span>
           </div>
         </div>
 
-        <div className="p-6 border-t border-vault-border flex-shrink-0">
+        <div className="px-6 pb-6 flex-shrink-0">
           <button
             onClick={onClose}
             className="w-full py-2.5 bg-vault-primary hover:bg-vault-primaryHover rounded-xl text-white font-medium transition-colors"
@@ -122,6 +95,18 @@ export function AboutScreen({ onClose }: AboutScreenProps) {
             Fechar
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-3 p-3 bg-vault-sidebar border border-vault-border rounded-xl">
+      <div className="mt-0.5 flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-vault-text text-xs font-medium">{label}</p>
+        <p className="text-vault-textMuted text-xs mt-0.5 leading-relaxed">{value}</p>
       </div>
     </div>
   );
