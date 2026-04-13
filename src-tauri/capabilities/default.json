@@ -14,7 +14,6 @@
     "core:tray:default",
     "opener:default",
     "store:default",
-    "dialog:default",
-    "os:default"
+    "dialog:default"
   ]
 }
