@@ -55,7 +55,7 @@ jobs:
         shell: bash
         run: |
           git fetch origin master
-          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/master; then
+          if ! git branch -r --contains "${{ github.sha }}" | grep -qE "origin/master"; then
             echo "❌ Tag não está na branch master. Build cancelado."
             exit 1
           fi
