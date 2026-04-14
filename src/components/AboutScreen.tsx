@@ -1,10 +1,9 @@
 import { X, ShieldCheck, Mail, Github, Lock, HardDrive, Cloud, Share2 } from "lucide-react";
+import { version as APP_VERSION } from "../../package.json";
 
 interface AboutScreenProps {
   onClose: () => void;
 }
-
-const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.1.5";
 
 export function AboutScreen({ onClose }: AboutScreenProps) {
   return (
