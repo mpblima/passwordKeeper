@@ -21,10 +21,22 @@ tauri = { version = "2", features = [] }
 tauri-plugin-store = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-os = "2"
+tauri-plugin-http = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
+
+# HTTP via Java/JNI no Android (NDK não consegue fazer DNS/sockets externos)
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.21", default-features = false }
+ndk-context = "0.1"
+
+# rfd não compila para Android — apenas em targets desktop
+[target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = "0.15"
 
 [features]

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { FolderOpen, Plus, Save, LogOut, Info, HardDrive, Cloud, Share2, RefreshCw, Key, PanelLeft, Power } from "lucide-react";
+import { FolderOpen, Plus, Save, LogOut, Info, HardDrive, Cloud, Share2, RefreshCw, Key, PanelLeft, Power, Menu } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
+import { usePlatform } from "../hooks/usePlatform";
 import { AboutScreen } from "./AboutScreen";
 import { GoogleDriveModal } from "./GoogleDriveModal";
 import { SharedUsersModal } from "./SharedUsersModal";
@@ -10,6 +11,7 @@ import { ChangePasswordModal } from "./ChangePasswordModal";
 
 export function AppMenuBar() {
   const { saveToLocalFile, localVaultPath, closeVault, currentUserRole, toggleSidebar, sidebarOpen } = useVaultStore();
+  const { isAndroid } = usePlatform();
   const [openMenu, setOpenMenu] = useState<"file" | "utils" | "help" | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showDrive, setShowDrive] = useState(false);
@@ -41,33 +43,35 @@ export function AppMenuBar() {
     <>
       <div
         ref={barRef}
-        className="flex items-center h-9 bg-vault-sidebar border-b border-vault-border px-1 flex-shrink-0 select-none z-40"
+        className={`flex items-center bg-vault-sidebar border-b border-vault-border px-1 flex-shrink-0 select-none z-50 ${isAndroid ? "h-14" : "h-9"}`}
       >
-        {/* Sidebar toggle */}
+        {/* Sidebar toggle — hamburguer no Android, PanelLeft no desktop */}
         <button
           onClick={toggleSidebar}
-          className={`p-2 rounded mr-1 transition-colors ${
+          className={`${isAndroid ? "p-3" : "p-2"} rounded mr-1 transition-colors ${
             sidebarOpen
               ? "text-vault-textSecondary hover:text-vault-text hover:bg-vault-card/50"
               : "text-vault-primary bg-vault-primary/10 hover:bg-vault-primary/20"
           }`}
           title={sidebarOpen ? "Ocultar painel lateral" : "Mostrar painel lateral"}
         >
-          <PanelLeft size={15} />
+          {isAndroid ? <Menu size={26} /> : <PanelLeft size={15} />}
         </button>
 
-        {/* Arquivo */}
-        <MenuButton label="Arquivo" open={openMenu === "file"} onClick={() => toggle("file")} />
-        {/* Utilitários */}
-        <MenuButton label="Utilitários" open={openMenu === "utils"} onClick={() => toggle("utils")} />
-        {/* Ajuda */}
-        <MenuButton label="Ajuda" open={openMenu === "help"} onClick={() => toggle("help")} />
+        {/* Menus — ocultados no Android */}
+        {!isAndroid && (
+          <>
+            <MenuButton label="Arquivo" open={openMenu === "file"} onClick={() => toggle("file")} />
+            <MenuButton label="Utilitários" open={openMenu === "utils"} onClick={() => toggle("utils")} />
+            <MenuButton label="Ajuda" open={openMenu === "help"} onClick={() => toggle("help")} />
+          </>
+        )}
 
         {/* Arquivo dropdown */}
         {openMenu === "file" && (
           <Dropdown anchor="left-[0px] top-9">
             <MenuItem icon={<Plus size={14} />} label="Novo cofre" onClick={() => { close(); closeVault(); }} />
-            <MenuItem icon={<FolderOpen size={14} />} label="Abrir arquivo local..." onClick={() => { close(); closeVault(); /* passará para tela de abertura */ }} />
+            <MenuItem icon={<FolderOpen size={14} />} label="Abrir arquivo local..." onClick={() => { close(); closeVault(); }} />
             <MenuItem icon={<Cloud size={14} />} label="Abrir do Google Drive..." onClick={() => { close(); closeVault(); }} />
             <Separator />
             <MenuItem
