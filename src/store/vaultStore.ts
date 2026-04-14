@@ -148,7 +148,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   activeView: "all",
   searchQuery: "",
   viewMode: "grid",
-  sidebarOpen: true,
+  sidebarOpen: !/android/i.test(navigator.userAgent),
 
   setGoogleToken: (token) => {
     savePersisted("pk_google_token", token);

@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, Download, FolderOpen, LogOut } from "lucide-react";
+import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, Download, FolderOpen, LogOut, Power } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
+import { usePlatform } from "../hooks/usePlatform";
 import { GroupForm } from "./GroupForm";
 import { GoogleDriveModal } from "./GoogleDriveModal";
 import { ShareModal } from "./ShareModal";
@@ -35,6 +37,7 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
   const [showSharedUsers, setShowSharedUsers] = useState(false);
   const { deleteGroup, currentUserRole, closeVault } = useVaultStore();
 
+  const { isAndroid } = usePlatform();
   const role = currentUserRole();
   const isOwner = role === "owner";
   const pendingDeletionCount = vault?.deletionRequests?.length ?? 0;
@@ -54,7 +57,27 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
 
   return (
     <>
-      <aside className={`flex-shrink-0 flex flex-col h-full bg-vault-sidebar border-r border-vault-border transition-[width] duration-200 overflow-hidden ${sidebarOpen ? "w-64" : "w-0 border-r-0"}`}>
+      {/* Overlay para fechar o drawer no mobile */}
+      {isAndroid && sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50"
+          onClick={() => useVaultStore.getState().toggleSidebar()}
+        />
+      )}
+      <aside
+        className={`
+          flex flex-col bg-vault-sidebar border-r border-vault-border overflow-hidden
+          transition-transform duration-250
+          ${isAndroid
+            ? `fixed left-0 z-40 w-72 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`
+            : `flex-shrink-0 transition-[width] duration-200 h-full ${sidebarOpen ? "w-64" : "w-0 border-r-0"}`
+          }
+        `}
+        style={isAndroid ? {
+          top: "env(safe-area-inset-top)",
+          height: "calc(100% - env(safe-area-inset-top))",
+        } : undefined}
+      >
         {/* Logo */}
         <div className="p-5 border-b border-vault-border">
           <div className="flex items-center gap-3">
@@ -164,23 +187,28 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
         </nav>
 
         {/* Bottom actions */}
-        <div className="border-t border-vault-border p-3 space-y-1">
+        <div
+          className="border-t border-vault-border p-3 space-y-1"
+          style={isAndroid ? { paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" } : undefined}
+        >
 
-          {/* Save locally */}
-          <button
-            onClick={() => saveToLocalFile()}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-colors hover:bg-vault-card"
-          >
-            <HardDrive size={16} className={localVaultPath ? "text-amber-400" : "text-vault-textMuted"} />
-            <span className={`flex-1 text-left truncate text-xs ${localVaultPath ? "text-vault-textSecondary" : "text-vault-textMuted"}`}>
-              {localVaultPath
-                ? localVaultPath.split(/[\\/]/).pop()
-                : "Salvar localmente..."}
-            </span>
-            {isDirty && localVaultPath && (
-              <span className="w-2 h-2 rounded-full bg-vault-warning flex-shrink-0" title="Alterações não salvas" />
-            )}
-          </button>
+          {/* Save locally — desktop only */}
+          {!isAndroid && (
+            <button
+              onClick={() => saveToLocalFile()}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-colors hover:bg-vault-card"
+            >
+              <HardDrive size={16} className={localVaultPath ? "text-amber-400" : "text-vault-textMuted"} />
+              <span className={`flex-1 text-left truncate text-xs ${localVaultPath ? "text-vault-textSecondary" : "text-vault-textMuted"}`}>
+                {localVaultPath
+                  ? localVaultPath.split(/[\\/]/).pop()
+                  : "Salvar localmente..."}
+              </span>
+              {isDirty && localVaultPath && (
+                <span className="w-2 h-2 rounded-full bg-vault-warning flex-shrink-0" title="Alterações não salvas" />
+              )}
+            </button>
+          )}
 
           {/* Google Drive */}
           {googleToken ? (
@@ -261,14 +289,16 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
             Sobre o aplicativo
           </button>
 
-          {/* Close vault (open another) */}
-          <button
-            onClick={closeVault}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
-          >
-            <FolderOpen size={16} />
-            Fechar e abrir outro cofre
-          </button>
+          {/* Close vault — desktop only */}
+          {!isAndroid && (
+            <button
+              onClick={closeVault}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
+            >
+              <FolderOpen size={16} />
+              Fechar e abrir outro cofre
+            </button>
+          )}
 
           {/* Lock */}
           <button
@@ -278,6 +308,17 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
             <Lock size={16} />
             Bloquear cofre
           </button>
+
+          {/* Exit — Android only */}
+          {isAndroid && (
+            <button
+              onClick={() => invoke("exit_app")}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10 transition-colors"
+            >
+              <Power size={16} />
+              Sair
+            </button>
+          )}
         </div>
       </aside>
 

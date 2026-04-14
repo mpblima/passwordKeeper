@@ -40,5 +40,18 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["com.googleusercontent.apps.288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl"],
+          "host": "oauth2redirect"
+        },
+        {
+          "scheme": ["passwordkeeper"],
+          "host": "oauth-complete"
+        }
+      ]
+    }
+  }
 }

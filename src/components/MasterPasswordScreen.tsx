@@ -3,6 +3,7 @@ import {
   ShieldCheck, Eye, EyeOff, Lock, Plus, AlertCircle, Loader2,
   FolderOpen, Cloud, FileKey, ArrowRight, RefreshCw, Share2, Users,
 } from "lucide-react";
+import { usePlatform } from "../hooks/usePlatform";
 import { useVaultStore } from "../store/vaultStore";
 import {
   findAllVaultFiles, findAllShareFiles, downloadVaultFile,
@@ -44,6 +45,7 @@ function detectInitialMode(
 }
 
 export function MasterPasswordScreen() {
+  const { isAndroid } = usePlatform();
   const {
     createVault, unlockVault, mergeSharedEntries,
     googleToken, userInfo,
@@ -81,6 +83,16 @@ export function MasterPasswordScreen() {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
+  function friendlyError(err: unknown): string {
+    const msg = String(err);
+    if (msg.includes("sending request") || msg.includes("EAI_NONAME") || msg.includes("dns") || msg.includes("network") || msg.includes("UnknownHost")) {
+      return "Sem acesso à rede. Verifique as permissões de internet do aplicativo nas configurações do Android.";
+    }
+    if (msg.includes("decrypt")) return "Senha incorreta";
+    if (msg.includes("expirada") || msg.includes("autenticado")) return "Sessão expirada. Faça login novamente.";
+    return msg;
+  }
+
   function reset() {
     setError(""); setMasterPwd(""); setConfirmPwd(""); setPickedLocalPath(null); setSelectedDriveFileId(null);
   }
@@ -101,8 +113,13 @@ export function MasterPasswordScreen() {
     setMode(purpose === "vault" ? "connecting" : "import-connect");
     token = await startOAuthFlow(!googleToken); // force consent only on first login
     setGoogleToken(token);
-    const info = await getUserInfo(token.access_token);
-    setUserInfo(info);
+    try {
+      const info = await getUserInfo(token.access_token);
+      setUserInfo(info);
+    } catch {
+      // getUserInfo pode falhar em Android com restrição de rede MIUI.
+      // Não bloqueia o fluxo — userInfo é usado apenas para exibição.
+    }
     return token;
   }
 
@@ -152,7 +169,7 @@ export function MasterPasswordScreen() {
       const vaults = await findAllVaultFiles(token);
       setDriveVaults(vaults);
       if (vaults.length === 1) setSelectedDriveFileId(vaults[0].id);
-    } catch (err) { setError(String(err)); setMode("choose"); }
+    } catch (err) { setError(friendlyError(err)); setMode("choose"); }
     setLoadingDriveList(false);
   }
 
@@ -170,8 +187,7 @@ export function MasterPasswordScreen() {
       if (pendingShare) mergeSharedEntries(pendingShare.entries, pendingShare.group);
     } catch (err) {
       const msg = String(err);
-      if (msg.includes("decrypt")) setError("Senha incorreta");
-      else setError(msg);
+      setError(friendlyError(err));
       setLoading(false);
     }
   }
@@ -200,10 +216,13 @@ export function MasterPasswordScreen() {
         await unlockVault(encrypted, masterPwd);
       } catch (err) {
         const msg = String(err);
-        if (msg.includes("decrypt")) setError("Senha incorreta");
-        else if (msg.includes("expirada") || msg.includes("autenticado")) {
+        if (msg.includes("expirada") || msg.includes("autenticado")) {
+          // Sessão expirada → novo login
           setLoading(false); handleConnectDrive();
-        } else { setError(msg); setLoading(false); }
+        } else {
+          setError(friendlyError(err));
+          setLoading(false);
+        }
       }
     }
   }
@@ -217,7 +236,7 @@ export function MasterPasswordScreen() {
       setMode("import-pick");
       const files = await findAllShareFiles(token);
       setShareFiles(files);
-    } catch (err) { setError(String(err)); setMode("choose"); }
+    } catch (err) { setError(friendlyError(err)); setMode("choose"); }
     setLoadingShareList(false);
   }
 
@@ -243,7 +262,7 @@ export function MasterPasswordScreen() {
       const msg = String(err);
       if (msg.toLowerCase().includes("decrypt") || msg.includes("tag") || msg.includes("cipher")) {
         setError("Senha de compartilhamento incorreta");
-      } else { setError(msg); }
+      } else { setError(friendlyError(err)); }
     }
     setLoading(false);
   }
@@ -261,23 +280,23 @@ export function MasterPasswordScreen() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-vault-bg flex items-center justify-center p-4">
+    <div className={`min-h-screen bg-vault-bg flex flex-col ${isAndroid ? "pt-10 pb-6 px-4" : "items-center justify-center p-4"}`}>
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-vault-primary/8 rounded-full blur-3xl" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-vault-secondary/8 rounded-full blur-3xl" />
       </div>
 
-      <div className="relative w-full max-w-md">
+      <div className={`relative w-full ${isAndroid ? "flex flex-col flex-1" : "max-w-md"}`}>
         {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-vault-primary to-vault-secondary flex items-center justify-center mx-auto mb-4 shadow-2xl shadow-vault-primary/30">
-            <ShieldCheck size={36} className="text-vault-bg" />
+        <div className={`text-center ${isAndroid ? "mb-5 mt-2" : "mb-8"}`}>
+          <div className={`${isAndroid ? "w-14 h-14" : "w-20 h-20"} rounded-3xl bg-gradient-to-br from-vault-primary to-vault-secondary flex items-center justify-center mx-auto ${isAndroid ? "mb-3" : "mb-4"} shadow-2xl shadow-vault-primary/30`}>
+            <ShieldCheck size={isAndroid ? 26 : 36} className="text-vault-bg" />
           </div>
-          <h1 className="text-3xl font-bold text-vault-text">Password Keeper</h1>
-          <p className="text-vault-textMuted mt-1">Seu cofre de senhas seguro</p>
+          <h1 className={`${isAndroid ? "text-2xl" : "text-3xl"} font-bold text-vault-text`}>Password Keeper</h1>
+          <p className="text-vault-textMuted mt-1 text-sm">Seu cofre de senhas seguro</p>
         </div>
 
-        <div className="bg-vault-card border border-vault-border rounded-3xl p-8 shadow-2xl">
+        <div className={`bg-vault-card border border-vault-border ${isAndroid ? "rounded-2xl p-5 flex-1" : "rounded-3xl p-8"} shadow-2xl`}>
 
           {/* ── Quick unlock ── */}
           {mode === "quick" && (
@@ -322,13 +341,16 @@ export function MasterPasswordScreen() {
           {/* ── Choose ── */}
           {mode === "choose" && (
             <div className="space-y-3 animate-fade-in">
-              <h2 className="text-vault-text font-semibold text-center text-xl mb-6">Como deseja começar?</h2>
+              <h2 className={`text-vault-text font-semibold text-center ${isAndroid ? "text-lg mb-4" : "text-xl mb-6"}`}>Como deseja começar?</h2>
+              {error && <ErrorMsg message={error} />}
               <OptionButton icon={<Plus size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
                 title="Criar novo cofre" subtitle="Comece do zero com um cofre vazio"
                 onClick={() => { reset(); setMode("new"); }} />
-              <OptionButton icon={<FolderOpen size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
-                title="Abrir arquivo local" subtitle="Selecionar um arquivo .keep do computador"
-                onClick={() => { reset(); setMode("pick-local"); }} />
+              {!isAndroid && (
+                <OptionButton icon={<FolderOpen size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
+                  title="Abrir arquivo local" subtitle="Selecionar um arquivo .keep do computador"
+                  onClick={() => { reset(); setMode("pick-local"); }} />
+              )}
               <OptionButton icon={<GoogleIcon />} iconBg="bg-white/10"
                 title="Abrir do Google Drive"
                 subtitle={googleToken && userInfo ? `Conectado como ${userInfo.email}` : "Carregar cofre salvo na nuvem"}
@@ -400,9 +422,14 @@ export function MasterPasswordScreen() {
 
           {/* ── Connecting to Google (vault open) ── */}
           {(mode === "connecting" || mode === "import-connect") && (
-            <div className="text-center py-8 animate-fade-in space-y-3">
+            <div className="text-center py-8 animate-fade-in space-y-4">
               <div className="w-14 h-14 rounded-full border-2 border-vault-primary border-t-transparent animate-spin mx-auto" />
-              <p className="text-vault-textMuted text-sm">Aguardando autorização no navegador...</p>
+              <p className="text-vault-textSecondary text-sm font-medium">Aguardando autorização no Google...</p>
+              {isAndroid && (
+                <p className="text-vault-textMuted text-xs leading-relaxed px-2">
+                  Após autorizar no navegador, toque em <strong className="text-vault-textSecondary">Recentes □</strong> e volte ao Password Keeper.
+                </p>
+              )}
             </div>
           )}
 
