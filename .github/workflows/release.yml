@@ -52,10 +52,13 @@ jobs:
           fetch-depth: 0
 
       - name: Verificar se a tag está na branch master
+        shell: bash
         run: |
           git fetch origin master
-          git merge-base --is-ancestor ${{ github.sha }} origin/master \
-            || (echo "❌ Tag não está na branch master. Build cancelado." && exit 1)
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/master; then
+            echo "❌ Tag não está na branch master. Build cancelado."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
