@@ -121,6 +121,11 @@ interface VaultStore {
   setActiveView: (view: ActiveView) => void;
   setSearchQuery: (q: string) => void;
   setViewMode: (m: ViewMode) => void;
+  sidebarOpen: boolean;
+  toggleSidebar: () => void;
+
+  // ── Vault password ─────────────────────────────────────────────────────────
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 
   // ── Computed ───────────────────────────────────────────────────────────────
   getFilteredEntries: () => PasswordEntry[];
@@ -143,6 +148,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   activeView: "all",
   searchQuery: "",
   viewMode: "grid",
+  sidebarOpen: true,
 
   setGoogleToken: (token) => {
     savePersisted("pk_google_token", token);
@@ -544,6 +550,13 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   setActiveView: (view) => set({ activeView: view, selectedGroupId: null, selectedEntryId: null }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setViewMode: (m) => set({ viewMode: m }),
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+
+  changePassword: async (currentPassword, newPassword) => {
+    const { masterPassword } = get();
+    if (currentPassword !== masterPassword) throw new Error("Senha atual incorreta");
+    set({ masterPassword: newPassword, isDirty: true });
+  },
 
   getFilteredEntries: () => {
     const { vault, activeView, selectedGroupId, searchQuery } = get();

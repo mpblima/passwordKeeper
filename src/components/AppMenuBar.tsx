@@ -1,18 +1,21 @@
 import { useState, useRef, useEffect } from "react";
-import { FolderOpen, Plus, Save, LogOut, Info, HardDrive, Cloud, Share2, RefreshCw } from "lucide-react";
+import { FolderOpen, Plus, Save, LogOut, Info, HardDrive, Cloud, Share2, RefreshCw, Key, PanelLeft, Power } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
 import { AboutScreen } from "./AboutScreen";
 import { GoogleDriveModal } from "./GoogleDriveModal";
 import { SharedUsersModal } from "./SharedUsersModal";
 import { BackupModal } from "./BackupModal";
+import { ChangePasswordModal } from "./ChangePasswordModal";
 
 export function AppMenuBar() {
-  const { saveToLocalFile, localVaultPath, closeVault, currentUserRole } = useVaultStore();
+  const { saveToLocalFile, localVaultPath, closeVault, currentUserRole, toggleSidebar, sidebarOpen } = useVaultStore();
   const [openMenu, setOpenMenu] = useState<"file" | "utils" | "help" | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showDrive, setShowDrive] = useState(false);
   const [showShared, setShowShared] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
 
   // Close menu when clicking outside
@@ -40,6 +43,19 @@ export function AppMenuBar() {
         ref={barRef}
         className="flex items-center h-9 bg-vault-sidebar border-b border-vault-border px-1 flex-shrink-0 select-none z-40"
       >
+        {/* Sidebar toggle */}
+        <button
+          onClick={toggleSidebar}
+          className={`p-2 rounded mr-1 transition-colors ${
+            sidebarOpen
+              ? "text-vault-textSecondary hover:text-vault-text hover:bg-vault-card/50"
+              : "text-vault-primary bg-vault-primary/10 hover:bg-vault-primary/20"
+          }`}
+          title={sidebarOpen ? "Ocultar painel lateral" : "Mostrar painel lateral"}
+        >
+          <PanelLeft size={15} />
+        </button>
+
         {/* Arquivo */}
         <MenuButton label="Arquivo" open={openMenu === "file"} onClick={() => toggle("file")} />
         {/* Utilitários */}
@@ -68,19 +84,22 @@ export function AppMenuBar() {
             )}
             <Separator />
             <MenuItem icon={<LogOut size={14} />} label="Fechar cofre" danger onClick={() => { close(); closeVault(); }} />
+            <Separator />
+            <MenuItem icon={<Power size={14} />} label="Sair" danger onClick={() => { close(); invoke("exit_app"); }} />
           </Dropdown>
         )}
 
         {/* Utilitários dropdown */}
         {openMenu === "utils" && (
-          <Dropdown anchor="left-[56px] top-9">
+          <Dropdown anchor="left-[72px] top-9">
             <MenuItem icon={<RefreshCw size={14} />} label="Backup & Sincronização..." onClick={() => { close(); setShowBackup(true); }} />
+            <MenuItem icon={<Key size={14} />} label="Trocar senha do cofre..." onClick={() => { close(); setShowChangePassword(true); }} />
           </Dropdown>
         )}
 
         {/* Ajuda dropdown */}
         {openMenu === "help" && (
-          <Dropdown anchor="left-[126px] top-9">
+          <Dropdown anchor="left-[142px] top-9">
             <MenuItem icon={<Info size={14} />} label="Sobre o Password Keeper" onClick={() => { close(); setShowAbout(true); }} />
           </Dropdown>
         )}
@@ -90,6 +109,7 @@ export function AppMenuBar() {
       {showDrive && <GoogleDriveModal onClose={() => setShowDrive(false)} />}
       {showShared && <SharedUsersModal onClose={() => setShowShared(false)} />}
       {showBackup && <BackupModal onClose={() => setShowBackup(false)} />}
+      {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
     </>
   );
 }

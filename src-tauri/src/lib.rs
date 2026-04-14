@@ -7,12 +7,12 @@ use tokio::net::TcpListener;
 /// Opens the system browser, starts a local HTTP server on `port`,
 /// and returns the raw query-string from the OAuth redirect.
 #[tauri::command]
-async fn start_oauth(auth_url: String, port: u16) -> Result<String, String> {
+async fn start_oauth(app: tauri::AppHandle, auth_url: String, port: u16) -> Result<String, String> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
         .map_err(|e| format!("Não foi possível abrir porta {}: {}", port, e))?;
 
-    open_browser(&auth_url)?;
+    open_browser(&app, &auth_url)?;
 
     let (stream, _) = tokio::time::timeout(
         std::time::Duration::from_secs(120),
@@ -109,35 +109,11 @@ async fn start_oauth(auth_url: String, port: u16) -> Result<String, String> {
     }
 }
 
-fn open_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        let result = std::process::Command::new("xdg-open").arg(url).spawn();
-        if result.is_err() {
-            for browser in &["firefox", "google-chrome", "chromium", "chromium-browser"] {
-                if std::process::Command::new(browser).arg(url).spawn().is_ok() {
-                    return Ok(());
-                }
-            }
-            return Err("Não foi possível abrir o navegador".to_string());
-        }
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(url).spawn().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err("Plataforma não suportada".to_string())
+fn open_browser(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // ─── File I/O ─────────────────────────────────────────────────────────────────
@@ -178,6 +154,12 @@ async fn read_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
 }
 
+/// Encerra o processo imediatamente.
+#[tauri::command]
+fn exit_app() {
+    std::process::exit(0);
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -190,6 +172,7 @@ pub fn run() {
             write_file,
             read_file,
             pick_and_read_image,
+            exit_app,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao iniciar o Password Keeper");

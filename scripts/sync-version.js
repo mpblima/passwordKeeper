@@ -10,6 +10,13 @@ if (!version) {
   process.exit(1);
 }
 
+// package.json
+const pkgPath = join(__dirname, "..", "package.json");
+const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+pkg.version = version;
+writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+console.log("package.json →", version);
+
 // tauri.conf.json
 const confPath = join(__dirname, "..", "src-tauri", "tauri.conf.json");
 const conf = JSON.parse(readFileSync(confPath, "utf8"));

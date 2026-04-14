@@ -18,7 +18,7 @@ interface SidebarProps {
 export function Sidebar({ onAddEntry }: SidebarProps) {
   const {
     vault, activeView, selectedGroupId, searchQuery, googleToken, userInfo,
-    isSyncing, isDirty, localVaultPath,
+    isSyncing, isDirty, localVaultPath, sidebarOpen,
     setActiveView, selectGroup, setSearchQuery, lockVault,
     saveToLocalFile, updateEntry,
   } = useVaultStore();
@@ -54,7 +54,7 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
 
   return (
     <>
-      <aside className="w-64 flex-shrink-0 flex flex-col h-full bg-vault-sidebar border-r border-vault-border">
+      <aside className={`flex-shrink-0 flex flex-col h-full bg-vault-sidebar border-r border-vault-border transition-[width] duration-200 overflow-hidden ${sidebarOpen ? "w-64" : "w-0 border-r-0"}`}>
         {/* Logo */}
         <div className="p-5 border-b border-vault-border">
           <div className="flex items-center gap-3">
