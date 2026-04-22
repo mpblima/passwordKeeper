@@ -14,3 +14,8 @@ vault-config.json
 # Env local (se criar um .env com as credenciais para desenvolvimento)
 .env
 .env.local
+
+# Secrets / signing material
+client_secret*.json
+*.jks
+*.keystore

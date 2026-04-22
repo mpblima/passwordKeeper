@@ -60,7 +60,7 @@ export function AboutScreen({ onClose }: AboutScreenProps) {
               <InfoRow
                 icon={<Share2 size={15} className="text-vault-primary" />}
                 label="Compartilhamento"
-                value="Arquivo .pks protegido por senha separada"
+                value="Documento colaborativo .keep no Google Drive"
               />
             </div>
           </div>

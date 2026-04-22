@@ -6,6 +6,7 @@ import {
   downloadVaultFile,
   uploadVaultFile,
   refreshAccessToken,
+  getFileVersion,
 } from "../services/googleDrive";
 import {
   pickSavePath,
@@ -47,6 +48,7 @@ interface VaultStore {
   // ── Google Drive ───────────────────────────────────────────────────────────
   googleToken: GoogleToken | null;
   driveFileId: string | null;
+  driveRevision: string | null;
   userInfo: { email: string; name: string; picture: string } | null;
 
   // ── Local storage ──────────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ interface VaultStore {
   setGoogleToken: (token: GoogleToken | null) => void;
   setUserInfo: (info: { email: string; name: string; picture: string } | null) => void;
   setDriveFileId: (id: string | null) => void;
+  setDriveRevision: (revision: string | null) => void;
 
   // ── Role ───────────────────────────────────────────────────────────────────
   currentUserRole: () => VaultPermission;
@@ -93,6 +96,7 @@ interface VaultStore {
   // ── Google Drive sync ──────────────────────────────────────────────────────
   syncToCloud: () => Promise<void>;
   loadFromCloud: () => Promise<string>;
+  refreshFromCloudIfChanged: () => Promise<boolean>;
   ensureValidToken: () => Promise<GoogleToken>;
 
   // ── Groups ─────────────────────────────────────────────────────────────────
@@ -136,6 +140,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   masterPassword: "",
   googleToken: loadPersisted<GoogleToken>("pk_google_token"),
   driveFileId: loadPersisted<string>("pk_drive_file_id"),
+  driveRevision: loadPersisted<string>("pk_drive_revision"),
   userInfo: loadPersisted<{ email: string; name: string; picture: string }>("pk_user_info"),
   localVaultPath: loadPersisted<string>("pk_local_vault_path"),
   vault: null,
@@ -167,25 +172,32 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     savePersisted("pk_drive_file_id", id);
     set({ driveFileId: id });
   },
+  setDriveRevision: (revision) => {
+    savePersisted("pk_drive_revision", revision);
+    set({ driveRevision: revision });
+  },
 
   initFromStorage: async () => {
-    const [googleToken, userInfo, driveFileId, localVaultPath] = await Promise.all([
+    const [googleToken, userInfo, driveFileId, driveRevision, localVaultPath] = await Promise.all([
       persistLoad<GoogleToken>("pk_google_token"),
       persistLoad<{ email: string; name: string; picture: string }>("pk_user_info"),
       persistLoad<string>("pk_drive_file_id"),
+      persistLoad<string>("pk_drive_revision"),
       persistLoad<string>("pk_local_vault_path"),
     ]);
     set((s) => ({
       googleToken: googleToken ?? s.googleToken,
       userInfo: userInfo ?? s.userInfo,
       driveFileId: driveFileId ?? s.driveFileId,
+      driveRevision: driveRevision ?? s.driveRevision,
       localVaultPath: localVaultPath ?? s.localVaultPath,
     }));
   },
 
   currentUserRole: (): VaultPermission => {
     const { vault, userInfo } = get();
-    if (!vault || !userInfo) return "owner";
+    if (!vault) return "owner";
+    if (!userInfo) return vault.collaboration ? "reader" : "owner";
     if (!vault.owner || vault.owner === userInfo.email) return "owner";
     const shared = vault.sharedWith?.find((u) => u.email === userInfo.email);
     return shared?.role ?? "reader";
@@ -224,6 +236,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     // Only clear vault-specific state — keep Google credentials so user
     // doesn't have to re-authenticate on the next open.
     savePersisted("pk_drive_file_id", null);
+    savePersisted("pk_drive_revision", null);
     savePersisted("pk_local_vault_path", null);
     set({
       isLocked: true,
@@ -235,6 +248,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       searchQuery: "",
       localVaultPath: null,
       driveFileId: null,
+      driveRevision: null,
       syncError: null,
       isDirty: false,
     });
@@ -381,7 +395,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       const { driveFileId } = get();
       const encrypted = await get().getEncryptedVault();
       const newFileId = await uploadVaultFile(token, encrypted, driveFileId ?? undefined);
-      set({ driveFileId: newFileId, isDirty: false, lastSyncAt: now(), isSyncing: false });
+      const revision = await getFileVersion(token, newFileId);
+      savePersisted("pk_drive_revision", revision);
+      savePersisted("pk_drive_file_id", newFileId);
+      set({ driveFileId: newFileId, driveRevision: revision, isDirty: false, lastSyncAt: now(), isSyncing: false });
     } catch (err) {
       set({ syncError: String(err), isSyncing: false });
       throw err;
@@ -399,7 +416,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         set({ driveFileId: fileId });
       }
       const encrypted = await downloadVaultFile(token, fileId);
-      set({ isSyncing: false });
+      const revision = await getFileVersion(token, fileId);
+      savePersisted("pk_drive_revision", revision);
+      set({ driveRevision: revision, isSyncing: false });
       return encrypted;
     } catch (err) {
       set({ syncError: String(err), isSyncing: false });
@@ -407,7 +426,28 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     }
   },
 
+  refreshFromCloudIfChanged: async () => {
+    const { isLocked, isDirty, masterPassword, driveFileId, driveRevision } = get();
+    if (isLocked || isDirty || !masterPassword || !driveFileId) return false;
+    const token = await get().ensureValidToken();
+    const revision = await getFileVersion(token, driveFileId);
+    if (!revision || revision === driveRevision) return false;
+    const encrypted = await downloadVaultFile(token, driveFileId);
+    const json = await decryptData(encrypted, masterPassword);
+    const raw = JSON.parse(json);
+    const vault: VaultData = {
+      sharedWith: [],
+      deletionRequests: [],
+      owner: "",
+      ...raw,
+    };
+    savePersisted("pk_drive_revision", revision);
+    set({ vault, driveRevision: revision, lastSyncAt: now(), syncError: null });
+    return true;
+  },
+
   addGroup: (data) => {
+    if (get().currentUserRole() === "reader") return;
     const group: PasswordGroup = { ...data, id: generateId(), createdAt: now(), updatedAt: now() };
     set((s) => ({
       vault: s.vault ? { ...s.vault, groups: [...s.vault.groups, group] } : s.vault,
@@ -416,6 +456,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   updateGroup: (id, data) => {
+    if (get().currentUserRole() === "reader") return;
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, groups: s.vault.groups.map((g) => g.id === id ? { ...g, ...data, updatedAt: now() } : g) }
@@ -425,6 +466,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   deleteGroup: (id) => {
+    if (get().currentUserRole() !== "owner") return;
     set((s) => ({
       vault: s.vault
         ? {
@@ -439,6 +481,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   addEntry: (data) => {
+    if (get().currentUserRole() === "reader") return;
     const { userInfo } = get();
     const entry: PasswordEntry = {
       ...data,
@@ -454,6 +497,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   updateEntry: (id, data) => {
+    if (get().currentUserRole() === "reader") return;
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, entries: s.vault.entries.map((e) => e.id === id ? { ...e, ...data, updatedAt: now() } : e) }
@@ -463,6 +507,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   deleteEntry: (id) => {
+    if (get().currentUserRole() !== "owner") return;
     set((s) => ({
       vault: s.vault ? { ...s.vault, entries: s.vault.entries.filter((e) => e.id !== id) } : s.vault,
       selectedEntryId: s.selectedEntryId === id ? null : s.selectedEntryId,
@@ -471,6 +516,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   toggleFavorite: (id) => {
+    if (get().currentUserRole() === "reader") return;
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, entries: s.vault.entries.map((e) => e.id === id ? { ...e, favorite: !e.favorite, updatedAt: now() } : e) }
@@ -500,6 +546,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   approveDeletion: (requestId) => {
+    if (get().currentUserRole() !== "owner") return;
     set((s) => {
       if (!s.vault) return s;
       const req = (s.vault.deletionRequests ?? []).find((r) => r.id === requestId);
@@ -526,6 +573,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   updateSharedUserRole: (email, role) => {
+    if (get().currentUserRole() !== "owner") return;
     set((s) => {
       if (!s.vault) return s;
       const existing = s.vault.sharedWith.find((u) => u.email === email);
@@ -537,6 +585,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   removeSharedUser: (email) => {
+    if (get().currentUserRole() !== "owner") return;
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, sharedWith: s.vault.sharedWith.filter((u) => u.email !== email) }

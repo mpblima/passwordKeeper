@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "android"))]
 use base64::Engine;
 
 // ─── HTTP via Java/JNI (Android) ──────────────────────────────────────────────
@@ -27,7 +28,7 @@ async fn android_http_request(
         serde_json::to_string(&headers).map_err(|e| format!("headers: {}", e))?;
 
     tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let android_ctx = unsafe { ndk_context::android_context() };
+        let android_ctx = ndk_context::android_context();
         let vm = unsafe { JavaVM::from_raw(android_ctx.vm().cast()) }
             .map_err(|e| format!("JavaVM: {}", e))?;
         let mut env = vm.attach_current_thread()
@@ -134,6 +135,7 @@ async fn start_oauth(
     client_id: String,
     client_secret: String,
     redirect_uri: String,
+    expected_state: String,
 ) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -174,6 +176,14 @@ async fn start_oauth(
         qs.split('&')
             .find_map(|p| p.strip_prefix("code=").map(str::to_string))
     });
+    let returned_state = query_string.as_deref().and_then(|qs| {
+        qs.split('&')
+            .find_map(|p| p.strip_prefix("state=").map(str::to_string))
+    });
+
+    if returned_state.as_deref() != Some(expected_state.as_str()) {
+        return Err("Estado OAuth inválido. Tente conectar novamente.".to_string());
+    }
 
     let html_body = if is_error || code.is_none() {
         r#"<!DOCTYPE html>

@@ -142,33 +142,11 @@ export function SharedUsersModal({ onClose }: SharedUsersModalProps) {
 
 // ─── Wrapper para adicionar novo compartilhamento via ShareModal ──────────────
 
-function AddShareWrapper({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const { vault } = useVaultStore();
-
-  // Create a fake "vault" entry to share via the existing ShareModal
-  // We share the entire vault concept — type "group" with the first group or a placeholder
-  const firstGroup = vault?.groups[0] ?? null;
-
-  if (!firstGroup) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className="bg-vault-card border border-vault-border rounded-2xl w-full max-w-sm mx-4 p-6 shadow-2xl">
-          <p className="text-vault-text font-medium mb-2">Sem grupos para compartilhar</p>
-          <p className="text-vault-textMuted text-sm mb-4">
-            Crie um grupo primeiro para poder compartilhá-lo com outras pessoas.
-          </p>
-          <button onClick={onClose} className="w-full py-2.5 bg-vault-primary rounded-xl text-white text-sm font-medium">
-            Fechar
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+function AddShareWrapper({ onDone }: { onClose: () => void; onDone: () => void }) {
   return (
     <ShareModal
-      target={firstGroup}
-      type="group"
+      target={null}
+      type="vault"
       onClose={onDone}
     />
   );
