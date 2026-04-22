@@ -6,11 +6,10 @@ import {
 import { usePlatform } from "../hooks/usePlatform";
 import { useVaultStore } from "../store/vaultStore";
 import {
-  findAllVaultFiles, findAllShareFiles, downloadVaultFile,
-  startOAuthFlow, getUserInfo,
+  findAllVaultFiles, findAllCollaborativeVaultFiles, downloadVaultFile,
+  startOAuthFlow, getUserInfo, getFileVersion,
 } from "../services/googleDrive";
 import { pickOpenPath, readVaultFile } from "../services/localFile";
-import { decryptData } from "../services/crypto";
 import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
 
 type ScreenMode =
@@ -23,7 +22,7 @@ type ScreenMode =
   | "unlock-drive"     // step 2: Drive file chosen, ask password
   | "connecting"       // waiting OAuth browser (for vault open)
   | "import-connect"   // waiting OAuth browser (for import flow)
-  | "import-pick"      // list .pks share files
+  | "import-pick"      // list shared collaborative vaults
   | "import-unlock"    // enter share password to decrypt
   | "import-dest"      // choose destination (new vault / local / drive)
   | "import-new-vault"; // set master password for new vault
@@ -49,7 +48,7 @@ export function MasterPasswordScreen() {
   const {
     createVault, unlockVault, mergeSharedEntries,
     googleToken, userInfo,
-    setGoogleToken, setUserInfo, setDriveFileId,
+    setGoogleToken, setUserInfo, setDriveFileId, setDriveRevision,
     localVaultPath, ensureValidToken,
   } = useVaultStore();
 
@@ -184,6 +183,8 @@ export function MasterPasswordScreen() {
       setDriveFileId(selectedDriveFileId);
       const encrypted = await downloadVaultFile(token, selectedDriveFileId);
       await unlockVault(encrypted, masterPwd);
+      const revision = await getFileVersion(token, selectedDriveFileId);
+      setDriveRevision(revision);
       if (pendingShare) mergeSharedEntries(pendingShare.entries, pendingShare.group);
     } catch (err) {
       const msg = String(err);
@@ -214,6 +215,8 @@ export function MasterPasswordScreen() {
         setDriveFileId(fileId);
         const encrypted = await downloadVaultFile(token, fileId);
         await unlockVault(encrypted, masterPwd);
+        const revision = await getFileVersion(token, fileId);
+        setDriveRevision(revision);
       } catch (err) {
         const msg = String(err);
         if (msg.includes("expirada") || msg.includes("autenticado")) {
@@ -234,7 +237,7 @@ export function MasterPasswordScreen() {
     try {
       const token = await connectGoogle("import");
       setMode("import-pick");
-      const files = await findAllShareFiles(token);
+      const files = await findAllCollaborativeVaultFiles(token);
       setShareFiles(files);
     } catch (err) { setError(friendlyError(err)); setMode("choose"); }
     setLoadingShareList(false);
@@ -243,28 +246,23 @@ export function MasterPasswordScreen() {
   async function handleImportDecrypt(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (!shareUnlockPwd) { setError("Digite a senha de compartilhamento"); return; }
-    if (!selectedShareFileId) { setError("Selecione um arquivo"); return; }
+    if (!shareUnlockPwd) { setError("Digite a senha do compartilhamento"); return; }
+    if (!selectedShareFileId) { setError("Selecione um compartilhamento"); return; }
     setLoading(true);
     try {
-      const token = googleToken!;
+      const token = await ensureValidToken();
       const encrypted = await downloadVaultFile(token, selectedShareFileId);
-      const decrypted = await decryptData(encrypted, shareUnlockPwd);
-      const data = JSON.parse(decrypted);
-      setPendingShare({
-        group: data.group ?? null,
-        entries: data.entries ?? [],
-        role: data.role ?? "reader",
-        sharedBy: data.vaultOwner,
-      });
-      setMode("import-dest");
+      await unlockVault(encrypted, shareUnlockPwd);
+      const revision = await getFileVersion(token, selectedShareFileId);
+      setDriveFileId(selectedShareFileId);
+      setDriveRevision(revision);
     } catch (err) {
       const msg = String(err);
       if (msg.toLowerCase().includes("decrypt") || msg.includes("tag") || msg.includes("cipher")) {
-        setError("Senha de compartilhamento incorreta");
+        setError("Senha do compartilhamento incorreta");
       } else { setError(friendlyError(err)); }
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   async function handleImportToNewVault(e: React.FormEvent) {
@@ -356,8 +354,8 @@ export function MasterPasswordScreen() {
                 subtitle={googleToken && userInfo ? `Conectado como ${userInfo.email}` : "Carregar cofre salvo na nuvem"}
                 onClick={() => { reset(); handleConnectDrive(); }} />
               <OptionButton icon={<Share2 size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
-                title="Importar compartilhamento"
-                subtitle="Receber senhas compartilhadas por alguém"
+                title="Abrir compartilhamento"
+                subtitle="Colaborar em senha ou grupo compartilhado"
                 onClick={() => { reset(); handleConnectForImport(); }} />
             </div>
           )}
@@ -504,7 +502,7 @@ export function MasterPasswordScreen() {
             </form>
           )}
 
-          {/* ── Import: list .pks files ── */}
+          {/* ── Open shared collaborative vault ── */}
           {mode === "import-pick" && (
             <div className="space-y-4 animate-fade-in">
               <BackButton onClick={() => { cancelImport(); }} />
@@ -523,7 +521,7 @@ export function MasterPasswordScreen() {
                 <div className="text-center py-6">
                   <Users size={32} className="text-vault-textMuted mx-auto mb-2" />
                   <p className="text-vault-textSecondary text-sm font-medium">Nenhum compartilhamento encontrado</p>
-                  <p className="text-vault-textMuted text-xs mt-1">Peça ao dono do cofre para compartilhar com o seu e-mail.</p>
+                  <p className="text-vault-textMuted text-xs mt-1">Peça ao proprietario para compartilhar com o seu email Google.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -545,11 +543,11 @@ export function MasterPasswordScreen() {
             </div>
           )}
 
-          {/* ── Import: enter share password ── */}
+          {/* ── Shared vault password ── */}
           {mode === "import-unlock" && (
             <form onSubmit={handleImportDecrypt} className="space-y-4 animate-fade-in">
               <BackButton onClick={() => { setError(""); setMode("import-pick"); }} />
-              <h2 className="text-vault-text font-semibold text-lg">Senha de compartilhamento</h2>
+              <h2 className="text-vault-text font-semibold text-lg">Senha do compartilhamento</h2>
               <div className="flex items-center gap-3 p-3 bg-vault-sidebar border border-vault-border rounded-xl">
                 <div className="w-8 h-8 rounded-lg bg-vault-primary/20 flex items-center justify-center flex-shrink-0">
                   <Share2 size={16} className="text-vault-primary" />
@@ -558,11 +556,11 @@ export function MasterPasswordScreen() {
                   {shareFiles.find(f => f.id === selectedShareFileId)?.name}
                 </p>
               </div>
-              <p className="text-vault-textMuted text-xs">Insira a senha enviada pelo dono do cofre.</p>
-              <PasswordField label="Senha de compartilhamento" value={shareUnlockPwd} onChange={setShareUnlockPwd} show={showSharePwd} onToggle={() => setShowSharePwd(!showSharePwd)} placeholder="Senha fornecida pelo remetente" />
+              <p className="text-vault-textMuted text-xs">Insira a senha enviada pelo proprietario.</p>
+              <PasswordField label="Senha do compartilhamento" value={shareUnlockPwd} onChange={setShareUnlockPwd} show={showSharePwd} onToggle={() => setShowSharePwd(!showSharePwd)} placeholder="Senha fornecida pelo proprietario" />
               {error && <ErrorMsg message={error} />}
               <button type="submit" disabled={loading} className="w-full py-3 bg-vault-primary hover:bg-vault-primaryHover disabled:opacity-40 rounded-xl text-vault-bg font-semibold transition-all flex items-center justify-center gap-2">
-                {loading ? <><Loader2 size={18} className="animate-spin" /> Descriptografando...</> : <><ArrowRight size={18} /> Continuar</>}
+                {loading ? <><Loader2 size={18} className="animate-spin" /> Abrindo...</> : <><ArrowRight size={18} /> Abrir compartilhamento</>}
               </button>
             </form>
           )}

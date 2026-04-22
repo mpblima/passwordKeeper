@@ -6,6 +6,16 @@ export interface SharedUser {
   addedAt: string;
 }
 
+export type SharedScopeType = "vault" | "group" | "entry";
+
+export interface VaultCollaboration {
+  documentId: string;
+  type: SharedScopeType;
+  title: string;
+  createdFromId?: string;
+  createdAt: string;
+}
+
 export interface DeletionRequest {
   id: string;
   entryId: string;
@@ -42,6 +52,7 @@ export interface PasswordGroup {
 export interface VaultData {
   version: string;
   owner: string;
+  collaboration?: VaultCollaboration;
   sharedWith: SharedUser[];
   deletionRequests: DeletionRequest[];
   groups: PasswordGroup[];

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, Download, FolderOpen, LogOut, Power } from "lucide-react";
+import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, FolderOpen, LogOut, Power } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
 import { usePlatform } from "../hooks/usePlatform";
@@ -271,13 +271,13 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
             </button>
           )}
 
-          {/* Import shared file */}
+          {/* Open shared collaboration */}
           <button
             onClick={() => setShowImport(true)}
             className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-vault-textMuted hover:text-vault-text hover:bg-vault-card transition-colors"
           >
-            <Download size={16} />
-            Importar compartilhamento
+            <Share2 size={16} />
+            Abrir compartilhamento
           </button>
 
           {/* About */}

@@ -10,8 +10,8 @@ import { Cloud, RefreshCw } from "lucide-react";
 export function App() {
   const {
     isLocked, isDirty, isSyncing,
-    googleToken, localVaultPath,
-    syncToCloud, saveToLocalFile, initFromStorage,
+    googleToken, localVaultPath, driveFileId,
+    syncToCloud, saveToLocalFile, initFromStorage, refreshFromCloudIfChanged,
   } = useVaultStore();
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [addEntryGroupId, setAddEntryGroupId] = useState<string | undefined>();
@@ -33,6 +33,15 @@ export function App() {
     setAutoSyncTimer(timer);
     return () => clearTimeout(timer);
   }, [isDirty, googleToken, localVaultPath]);
+
+  // Collaborative Drive documents: pull remote changes while the local vault is clean.
+  useEffect(() => {
+    if (isLocked || !googleToken || !driveFileId) return;
+    const timer = setInterval(() => {
+      refreshFromCloudIfChanged().catch(() => {});
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [isLocked, googleToken, driveFileId, refreshFromCloudIfChanged]);
 
   if (isLocked) {
     return <MasterPasswordScreen />;

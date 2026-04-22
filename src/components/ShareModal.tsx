@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { X, Share2, Mail, Copy, Check, AlertCircle, Lock, ShieldCheck, Eye, Edit } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
-import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
+import { PasswordEntry, PasswordGroup, VaultData, VaultPermission } from "../types/vault";
 import { encryptData } from "../services/crypto";
 import { createSharedVaultFile, shareFile } from "../services/googleDrive";
 
 interface ShareModalProps {
   target: PasswordEntry | PasswordGroup | null;
-  type: "entry" | "group";
+  type: "entry" | "group" | "vault";
   onClose: () => void;
 }
 
@@ -41,39 +41,64 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
   const [errorMsg, setErrorMsg] = useState("");
   const [copiedPwd, setCopiedPwd] = useState(false);
 
-  if (!target || !vault) return null;
+  if (!vault) return null;
 
+  const isVault = type === "vault";
   const isGroup = type === "group";
   const groupTarget = isGroup ? (target as PasswordGroup) : null;
+  const title = isVault ? "Cofre completo" : target?.name ?? "Compartilhamento";
 
-  const entriesToShare = isGroup
-    ? vault.entries.filter((e) => e.groupId === target.id)
+  const entriesToShare = isVault
+    ? vault.entries
+    : isGroup
+    ? vault.entries.filter((e) => e.groupId === target!.id)
     : [target as PasswordEntry];
+  const groupsToShare = isVault ? vault.groups : groupTarget ? [groupTarget] : [];
 
   async function handleShare() {
     if (!email.trim() || !sharePassword || !googleToken) return;
     setStep("sharing");
 
     try {
-      const shareData = {
-        type,
-        role,
-        sharedBy: new Date().toISOString(),
-        group: groupTarget,
+      const collaborator = email.trim().toLowerCase();
+      const sharedVault: VaultData = {
+        version: vault!.version,
+        owner: vault!.owner || "owner",
+        collaboration: {
+          documentId: crypto.randomUUID(),
+          type,
+          title,
+          createdFromId: target?.id,
+          createdAt: new Date().toISOString(),
+        },
+        sharedWith: [{ email: collaborator, role, addedAt: new Date().toISOString() }],
+        deletionRequests: [],
+        groups: groupsToShare,
         entries: entriesToShare,
-        vaultOwner: vault!.owner,
       };
 
-      const encrypted = await encryptData(JSON.stringify(shareData), sharePassword);
-      const fileName = `pk-share-${(target as { name: string }).name.replace(/\s+/g, "-")}-${Date.now()}.pks`;
+      const encrypted = await encryptData(JSON.stringify(sharedVault), sharePassword);
+      const safeName = title
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-|-$/g, "")
+        .toLowerCase();
+      const fileName = `pk-collab-${safeName || "cofre"}-${Date.now()}.keep`;
       const fileId = await createSharedVaultFile(googleToken, encrypted, fileName);
 
       // Share the Drive file with the recipient — role mapping to Drive roles
       const driveRole = role === "reader" ? "reader" : "writer";
-      await shareFile(googleToken, fileId, email, driveRole);
+      await shareFile(
+        googleToken,
+        fileId,
+        collaborator,
+        driveRole,
+        `Voce recebeu um compartilhamento do Password Keeper: ${title}. Abra pelo app em "Abrir compartilhamento".`
+      );
 
       // Record the shared user in the vault metadata
-      updateSharedUserRole(email, role);
+      updateSharedUserRole(collaborator, role);
 
       setStep("done");
     } catch (err) {
@@ -109,7 +134,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
             <div>
               <h2 className="text-vault-text font-semibold">Compartilhar</h2>
               <p className="text-vault-textMuted text-sm">
-                {isGroup ? "Grupo" : "Senha"}: {target.name}
+                {isVault ? "Cofre" : isGroup ? "Grupo" : "Senha"}: {title}
               </p>
             </div>
           </div>
@@ -241,7 +266,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
               <div>
                 <h3 className="text-vault-text font-semibold text-lg">Compartilhado!</h3>
                 <p className="text-vault-textMuted text-sm mt-1">
-                  Arquivo enviado para <strong className="text-vault-text">{email}</strong> como{" "}
+                  Convite enviado para <strong className="text-vault-text">{email}</strong> como{" "}
                   <strong className="text-vault-primary">{selectedRoleOption.label}</strong>.
                 </p>
               </div>

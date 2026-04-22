@@ -16,10 +16,10 @@
 export const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "") as string;
 export const GOOGLE_CLIENT_SECRET = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET ?? "") as string;
 
-// Android (client secret não é usado — verificação é feita pelo SHA-1 do keystore)
-export const GOOGLE_ANDROID_CLIENT_ID = (import.meta.env.VITE_GOOGLE_ANDROID_CLIENT_ID ?? "288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl.apps.googleusercontent.com") as string;
+// Android (client secret nao e usado; a verificacao e feita pelo package name + SHA-1)
+export const GOOGLE_ANDROID_CLIENT_ID = (import.meta.env.VITE_GOOGLE_ANDROID_CLIENT_ID ?? "") as string;
 
-// Redirect URI para Android: scheme reverso do client ID
+// Redirect URI Android aceito pelo Google para apps nativos: reverse client id + path.
 const _androidId = GOOGLE_ANDROID_CLIENT_ID.replace(".apps.googleusercontent.com", "");
 export const OAUTH_ANDROID_REDIRECT = `com.googleusercontent.apps.${_androidId}:/oauth2redirect`;
 

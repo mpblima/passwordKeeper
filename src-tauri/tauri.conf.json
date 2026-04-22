@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:8899 https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -44,8 +44,7 @@
     "deep-link": {
       "mobile": [
         {
-          "scheme": ["com.googleusercontent.apps.288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl"],
-          "host": "oauth2redirect"
+          "scheme": ["com.googleusercontent.apps.288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl"]
         },
         {
           "scheme": ["passwordkeeper"],
