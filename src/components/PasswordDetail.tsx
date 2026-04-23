@@ -31,19 +31,23 @@ function CopyButton({ text, label }: CopyButtonProps) {
 }
 
 export function PasswordDetail() {
-  const { vault, selectedEntryId, selectEntry, deleteEntry, toggleFavorite, requestDeletion, currentUserRole, userInfo } = useVaultStore();
+  const { vault, sharedSources, selectedEntryId, selectEntry, deleteEntry, toggleFavorite, requestDeletion, currentUserRole, userInfo } = useVaultStore();
   const [showPassword, setShowPassword] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [requestSent, setRequestSent] = useState(false);
 
-  const entry = vault?.entries.find((e) => e.id === selectedEntryId);
+  const sharedSource = sharedSources.find((source) => source.entries.some((e) => e.id === selectedEntryId));
+  const entry = vault?.entries.find((e) => e.id === selectedEntryId)
+    ?? sharedSource?.entries.find((e) => e.id === selectedEntryId);
   if (!entry) return null;
 
-  const group = vault?.groups.find((g) => g.id === entry.groupId);
+  const group = sharedSource
+    ? sharedSource.groups.find((g) => g.id === entry.groupId)
+    : vault?.groups.find((g) => g.id === entry.groupId);
   const strength = measurePasswordStrength(entry.password);
-  const role = currentUserRole();
+  const role = sharedSource?.role ?? currentUserRole();
   const isOwner = role === "owner";
   const canEdit = role === "owner" || role === "editor";
 
@@ -86,6 +90,11 @@ export function PasswordDetail() {
               {group && (
                 <span className="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full bg-vault-card border border-vault-border text-xs text-vault-textMuted">
                   {group.icon} {group.name}
+                </span>
+              )}
+              {sharedSource && (
+                <span className="inline-flex items-center gap-1 mt-1.5 ml-2 px-2 py-0.5 rounded-full bg-vault-primary/15 border border-vault-primary/30 text-xs text-vault-primary">
+                  Compartilhado por {sharedSource.owner}
                 </span>
               )}
             </div>

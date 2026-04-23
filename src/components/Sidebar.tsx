@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, FolderOpen, LogOut, Power } from "lucide-react";
+import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, FolderOpen, LogOut, Power, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
 import { usePlatform } from "../hooks/usePlatform";
@@ -20,10 +20,11 @@ interface SidebarProps {
 export function Sidebar({ onAddEntry }: SidebarProps) {
   const {
     vault, activeView, selectedGroupId, searchQuery, googleToken, userInfo,
-    isSyncing, isDirty, localVaultPath, sidebarOpen,
+    isSyncing, isDirty, localVaultPath, sidebarOpen, sharedSources,
     setActiveView, selectGroup, setSearchQuery, lockVault,
-    saveToLocalFile, updateEntry,
+    saveToLocalFile, updateEntry, removeSharedSource,
   } = useVaultStore();
+  const receivedSharedSources = sharedSources.filter((source) => source.role !== "owner");
 
 
   const [showGroupForm, setShowGroupForm] = useState(false);
@@ -35,6 +36,7 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
   const [showAbout, setShowAbout] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSharedUsers, setShowSharedUsers] = useState(false);
+  const [confirmRemoveShare, setConfirmRemoveShare] = useState<{ id: string; all: boolean } | null>(null);
   const { deleteGroup, currentUserRole, closeVault } = useVaultStore();
 
   const { isAndroid } = usePlatform();
@@ -48,11 +50,14 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
     if (entryId) updateEntry(entryId, { groupId: groupId ?? undefined });
   }
 
-  const totalEntries = vault?.entries.length ?? 0;
-  const favoriteCount = vault?.entries.filter((e) => e.favorite).length ?? 0;
+  const visibleVaultEntries = vault?.entries ?? [];
+  const visibleVaultGroups = vault?.groups ?? [];
+  const totalEntries = visibleVaultEntries.length + receivedSharedSources.flatMap((source) => source.entries).length;
+  const favoriteCount = visibleVaultEntries.filter((e) => e.favorite).length
+    + receivedSharedSources.flatMap((source) => source.entries).filter((entry) => entry.favorite).length;
 
   function getGroupEntryCount(groupId: string) {
-    return vault?.entries.filter((e) => e.groupId === groupId).length ?? 0;
+    return visibleVaultEntries.filter((e) => e.groupId === groupId).length;
   }
 
   return (
@@ -163,13 +168,13 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
               </button>
             </div>
 
-            {vault?.groups.length === 0 && (
+            {visibleVaultGroups.length === 0 && (
               <p className="text-xs text-vault-textMuted px-2 py-2">
                 Nenhum grupo criado
               </p>
             )}
 
-            {vault?.groups.map((group) => (
+            {visibleVaultGroups.map((group) => (
               <GroupNavItem
                 key={group.id}
                 group={group}
@@ -184,6 +189,61 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
               />
             ))}
           </div>
+
+          {receivedSharedSources.length > 0 && (
+            <div className="pt-3 pb-1">
+              <div className="px-2 mb-1">
+                <span className="text-xs font-semibold text-vault-textMuted uppercase tracking-wider">
+                  Compartilhados
+                </span>
+              </div>
+              {receivedSharedSources.map((source) => (
+                <div key={source.id} className="mb-2">
+                  <div className="flex items-center gap-1 px-2 py-1">
+                    <span className="flex-1 min-w-0 text-xs text-vault-textMuted truncate">
+                      {source.owner}
+                    </span>
+                    <button
+                      onClick={() => setConfirmRemoveShare({ id: source.id, all: false })}
+                      className="p-1 rounded text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10"
+                      title="Remover compartilhamento da minha lista"
+                    >
+                      <X size={12} />
+                    </button>
+                    {source.role === "owner" && (
+                      <button
+                        onClick={() => setConfirmRemoveShare({ id: source.id, all: true })}
+                        className="p-1 rounded text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10"
+                        title="Cancelar compartilhamento para todos"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                  {source.groups.length === 0 && source.entries.length > 0 && (
+                    <NavItem
+                      icon={<Share2 size={16} />}
+                      label={source.name}
+                      count={source.entries.length}
+                      active={false}
+                      onClick={() => useVaultStore.setState({ activeView: "group", selectedGroupId: `shared:${source.id}:ungrouped`, selectedEntryId: null })}
+                    />
+                  )}
+                  {source.groups.map((group) => (
+                    <GroupNavItem
+                      key={group.id}
+                      group={group}
+                      count={source.entries.filter((entry) => entry.groupId === group.id).length}
+                      active={activeView === "group" && selectedGroupId === group.id}
+                      onClick={() => selectGroup(group.id)}
+                      onAddEntry={source.role !== "reader" ? () => onAddEntry(group.id) : undefined}
+                      onDrop={(e) => handleDropOnGroup(e, group.id)}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
         </nav>
 
         {/* Bottom actions */}
@@ -363,6 +423,39 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
           </div>
         </div>
       )}
+
+      {confirmRemoveShare && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-vault-card border border-vault-border rounded-2xl p-6 w-80 shadow-2xl">
+            <h3 className="text-vault-text font-semibold mb-2">
+              {confirmRemoveShare.all ? "Cancelar compartilhamento?" : "Remover da lista?"}
+            </h3>
+            <p className="text-vault-textMuted text-sm mb-4">
+              {confirmRemoveShare.all
+                ? "O arquivo colaborativo será removido do Drive e os outros usuários deixarão de sincronizar."
+                : "O compartilhamento será removido apenas deste dispositivo."}
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmRemoveShare(null)}
+                className="flex-1 py-2 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textMuted text-sm"
+              >
+                Voltar
+              </button>
+              <button
+                onClick={() => {
+                  const pending = confirmRemoveShare;
+                  setConfirmRemoveShare(null);
+                  removeSharedSource(pending.id, pending.all).catch(() => {});
+                }}
+                className="flex-1 py-2 bg-vault-danger/20 border border-vault-danger/40 rounded-xl text-vault-danger text-sm font-medium"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -411,10 +504,10 @@ interface GroupNavItemProps {
   count: number;
   active: boolean;
   onClick: () => void;
-  onEdit: () => void;
-  onShare: () => void;
-  onDelete: () => void;
-  onAddEntry: () => void;
+  onEdit?: () => void;
+  onShare?: () => void;
+  onDelete?: () => void;
+  onAddEntry?: () => void;
   onDrop: (e: React.DragEvent) => void;
 }
 
@@ -449,18 +542,26 @@ function GroupNavItem({ group, count, active, onClick, onEdit, onShare, onDelete
           <span className="text-xs text-vault-primary font-medium">Mover aqui</span>
         ) : showActions ? (
           <div className="flex gap-0.5" onClick={(e) => e.stopPropagation()}>
-            <button onClick={onAddEntry} title="Adicionar senha neste grupo" className="p-1 rounded hover:bg-vault-success/20 hover:text-vault-success transition-colors">
-              <Plus size={12} />
-            </button>
-            <button onClick={onEdit} className="p-1 rounded hover:bg-vault-primary/20 hover:text-vault-primary transition-colors">
-              <Edit size={12} />
-            </button>
-            <button onClick={onShare} className="p-1 rounded hover:bg-vault-accent/20 hover:text-vault-accent transition-colors">
-              <Share2 size={12} />
-            </button>
-            <button onClick={onDelete} className="p-1 rounded hover:bg-vault-danger/20 hover:text-vault-danger transition-colors">
-              <Trash2 size={12} />
-            </button>
+            {onAddEntry && (
+              <button onClick={onAddEntry} title="Adicionar senha neste grupo" className="p-1 rounded hover:bg-vault-success/20 hover:text-vault-success transition-colors">
+                <Plus size={12} />
+              </button>
+            )}
+            {onEdit && (
+              <button onClick={onEdit} className="p-1 rounded hover:bg-vault-primary/20 hover:text-vault-primary transition-colors">
+                <Edit size={12} />
+              </button>
+            )}
+            {onShare && (
+              <button onClick={onShare} className="p-1 rounded hover:bg-vault-accent/20 hover:text-vault-accent transition-colors">
+                <Share2 size={12} />
+              </button>
+            )}
+            {onDelete && (
+              <button onClick={onDelete} className="p-1 rounded hover:bg-vault-danger/20 hover:text-vault-danger transition-colors">
+                <Trash2 size={12} />
+              </button>
+            )}
           </div>
         ) : (
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${active ? "bg-vault-primary/20 text-vault-primary" : "bg-vault-card text-vault-textMuted"}`}>

@@ -3,7 +3,7 @@ import { X, Share2, Mail, Copy, Check, AlertCircle, Lock, ShieldCheck, Eye, Edit
 import { useVaultStore } from "../store/vaultStore";
 import { PasswordEntry, PasswordGroup, VaultData, VaultPermission } from "../types/vault";
 import { encryptData } from "../services/crypto";
-import { createSharedVaultFile, shareFile } from "../services/googleDrive";
+import { createSharedVaultFile, getFileVersion, shareFile, startOAuthFlow } from "../services/googleDrive";
 
 interface ShareModalProps {
   target: PasswordEntry | PasswordGroup | null;
@@ -33,7 +33,7 @@ const ROLE_OPTIONS: { value: VaultPermission; label: string; desc: string; icon:
 ];
 
 export function ShareModal({ target, type, onClose }: ShareModalProps) {
-  const { vault, googleToken, updateSharedUserRole } = useVaultStore();
+  const { vault, googleToken, userInfo, setGoogleToken, ensureValidToken, updateSharedUserRole, addSharedSource } = useVaultStore();
   const [step, setStep] = useState<"form" | "sharing" | "done" | "error">("form");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<VaultPermission>("reader");
@@ -60,10 +60,17 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
     setStep("sharing");
 
     try {
+      let token;
+      try {
+        token = await ensureValidToken();
+      } catch {
+        token = await startOAuthFlow(true);
+        setGoogleToken(token);
+      }
       const collaborator = email.trim().toLowerCase();
       const sharedVault: VaultData = {
         version: vault!.version,
-        owner: vault!.owner || "owner",
+        owner: vault!.owner || userInfo?.email || "owner",
         collaboration: {
           documentId: crypto.randomUUID(),
           type,
@@ -85,17 +92,20 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
         .replace(/^-|-$/g, "")
         .toLowerCase();
       const fileName = `pk-collab-${safeName || "cofre"}-${Date.now()}.keep`;
-      const fileId = await createSharedVaultFile(googleToken, encrypted, fileName);
+      const fileId = await createSharedVaultFile(token, encrypted, fileName);
 
       // Share the Drive file with the recipient — role mapping to Drive roles
       const driveRole = role === "reader" ? "reader" : "writer";
       await shareFile(
-        googleToken,
+        token,
         fileId,
         collaborator,
         driveRole,
         `Voce recebeu um compartilhamento do Password Keeper: ${title}. Abra pelo app em "Abrir compartilhamento".`
       );
+
+      const revision = await getFileVersion(token, fileId);
+      addSharedSource(fileId, sharedVault, sharePassword, revision);
 
       // Record the shared user in the vault metadata
       updateSharedUserRole(collaborator, role);

@@ -9,7 +9,7 @@ import {
   findAllVaultFiles, findAllCollaborativeVaultFiles, downloadVaultFile,
   startOAuthFlow, getUserInfo, getFileVersion,
 } from "../services/googleDrive";
-import { pickOpenPath, readVaultFile } from "../services/localFile";
+import { getMobileVaultPath, pickOpenPath, readVaultFile } from "../services/localFile";
 import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
 
 type ScreenMode =
@@ -34,6 +34,17 @@ interface PendingShare {
   sharedBy?: string;
 }
 
+function formatShareFileName(name: string): string {
+  return name
+    .replace(/^pk-collab-/, "")
+    .replace(/-\d+\.keep$/, "")
+    .replace(/\.keep$/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function detectInitialMode(
   localVaultPath: string | null,
   googleToken: { expires_at: number } | null
@@ -49,7 +60,7 @@ export function MasterPasswordScreen() {
     createVault, unlockVault, mergeSharedEntries,
     googleToken, userInfo,
     setGoogleToken, setUserInfo, setDriveFileId, setDriveRevision,
-    localVaultPath, ensureValidToken,
+    localVaultPath, ensureValidToken, dismissedShareFileIds, dismissShareFile,
   } = useVaultStore();
 
   const [mode, setMode] = useState<ScreenMode>(
@@ -70,7 +81,7 @@ export function MasterPasswordScreen() {
   const [loadingDriveList, setLoadingDriveList] = useState(false);
 
   // Import share flow
-  const [shareFiles, setShareFiles] = useState<{ id: string; name: string }[]>([]);
+  const [shareFiles, setShareFiles] = useState<{ id: string; name: string; ownerEmail?: string }[]>([]);
   const [selectedShareFileId, setSelectedShareFileId] = useState<string | null>(null);
   const [shareUnlockPwd, setShareUnlockPwd] = useState("");
   const [showSharePwd, setShowSharePwd] = useState(false);
@@ -107,10 +118,10 @@ export function MasterPasswordScreen() {
     // Sets connecting mode while browser is open.
     let token;
     if (googleToken) {
-      try { return await ensureValidToken(); } catch { /* fall through to full login */ }
+      try { return await ensureValidToken(); } catch { /* fall through to recover a durable session */ }
     }
     setMode(purpose === "vault" ? "connecting" : "import-connect");
-    token = await startOAuthFlow(!googleToken); // force consent only on first login
+    token = await startOAuthFlow(true);
     setGoogleToken(token);
     try {
       const info = await getUserInfo(token.access_token);
@@ -135,11 +146,15 @@ export function MasterPasswordScreen() {
   async function handlePickLocalFile() {
     setError(""); setLoading(true);
     try {
-      const path = await pickOpenPath();
+      const path = isAndroid
+        ? await getMobileVaultPath()
+        : await pickOpenPath();
       if (!path) { setLoading(false); return; }
       setPickedLocalPath(path);
       setMode("unlock-local");
-    } catch { setError("Não foi possível selecionar o arquivo"); }
+    } catch {
+      setError(isAndroid ? "Nenhum cofre local encontrado neste dispositivo." : "Não foi possível selecionar o arquivo");
+    }
     setLoading(false);
   }
 
@@ -235,9 +250,22 @@ export function MasterPasswordScreen() {
   async function handleConnectForImport() {
     setError(""); setLoadingShareList(true);
     try {
-      const token = await connectGoogle("import");
+      let token = await connectGoogle("import");
       setMode("import-pick");
-      const files = await findAllCollaborativeVaultFiles(token);
+      let files = (await findAllCollaborativeVaultFiles(token))
+        .filter((file) => !dismissedShareFileIds.includes(file.id));
+      if (files.length === 0 && googleToken) {
+        token = await startOAuthFlow(false);
+        setGoogleToken(token);
+        try {
+          const info = await getUserInfo(token.access_token);
+          setUserInfo(info);
+        } catch {
+          setUserInfo(null);
+        }
+        files = (await findAllCollaborativeVaultFiles(token))
+          .filter((file) => !dismissedShareFileIds.includes(file.id));
+      }
       setShareFiles(files);
     } catch (err) { setError(friendlyError(err)); setMode("choose"); }
     setLoadingShareList(false);
@@ -349,6 +377,12 @@ export function MasterPasswordScreen() {
                   title="Abrir arquivo local" subtitle="Selecionar um arquivo .keep do computador"
                   onClick={() => { reset(); setMode("pick-local"); }} />
               )}
+              {isAndroid && (
+                <OptionButton icon={<FolderOpen size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
+                  title="Abrir local"
+                  subtitle={localVaultPath ? "Abrir o cofre salvo neste dispositivo" : "Abrir o cofre persistido no aparelho"}
+                  onClick={() => { reset(); setMode("pick-local"); }} />
+              )}
               <OptionButton icon={<GoogleIcon />} iconBg="bg-white/10"
                 title="Abrir do Google Drive"
                 subtitle={googleToken && userInfo ? `Conectado como ${userInfo.email}` : "Carregar cofre salvo na nuvem"}
@@ -393,9 +427,12 @@ export function MasterPasswordScreen() {
                 </div>
               )}
               <p className="text-vault-textMuted text-sm">Selecione o arquivo <code className="text-vault-primary">.keep</code> no seu computador.</p>
+              {isAndroid && (
+                <p className="text-vault-textMuted text-sm">O app vai abrir automaticamente o cofre salvo neste dispositivo.</p>
+              )}
               {error && <ErrorMsg message={error} />}
               <button onClick={handlePickLocalFile} disabled={loading} className="w-full py-3 bg-vault-primary hover:bg-vault-primaryHover disabled:opacity-40 rounded-xl text-vault-bg font-semibold transition-all flex items-center justify-center gap-2">
-                {loading ? <><Loader2 size={18} className="animate-spin" /> Abrindo...</> : <><FolderOpen size={18} /> Selecionar arquivo .keep</>}
+                {loading ? <><Loader2 size={18} className="animate-spin" /> Abrindo...</> : <><FolderOpen size={18} /> {isAndroid ? "Abrir cofre do dispositivo" : "Selecionar arquivo .keep"}</>}
               </button>
             </div>
           )}
@@ -513,6 +550,18 @@ export function MasterPasswordScreen() {
                 </button>
               </div>
               {userInfo && <p className="text-vault-textMuted text-xs">Conta: {userInfo.email}</p>}
+              {shareFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    shareFiles.forEach((file) => dismissShareFile(file.id));
+                    setShareFiles([]);
+                  }}
+                  className="w-full py-2 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textMuted hover:text-vault-danger text-xs transition-colors"
+                >
+                  Ocultar todos os convites desta lista
+                </button>
+              )}
               {loadingShareList ? (
                 <div className="flex items-center justify-center py-6 gap-2 text-vault-textMuted text-sm">
                   <Loader2 size={16} className="animate-spin" /> Buscando compartilhamentos...
@@ -526,16 +575,30 @@ export function MasterPasswordScreen() {
               ) : (
                 <div className="space-y-2">
                   {shareFiles.map((f) => (
-                    <button key={f.id}
-                      onClick={() => { setSelectedShareFileId(f.id); setMode("import-unlock"); }}
-                      className="w-full flex items-center gap-3 p-3 bg-vault-sidebar border border-vault-border hover:border-vault-primary/40 rounded-xl transition-colors text-left"
-                    >
+                    <div key={f.id} className="w-full flex items-center gap-3 p-3 bg-vault-sidebar border border-vault-border hover:border-vault-primary/40 rounded-xl transition-colors text-left">
                       <div className="w-8 h-8 rounded-lg bg-vault-primary/20 flex items-center justify-center flex-shrink-0">
                         <Share2 size={16} className="text-vault-primary" />
                       </div>
-                      <span className="text-vault-textSecondary text-sm flex-1 truncate">{f.name}</span>
+                      <button
+                        onClick={() => { setSelectedShareFileId(f.id); setMode("import-unlock"); }}
+                        className="flex-1 min-w-0 text-left"
+                      >
+                        <p className="text-vault-textSecondary text-sm truncate">{formatShareFileName(f.name)}</p>
+                        <p className="text-vault-textMuted text-xs">
+                          {f.ownerEmail ? `Compartilhado por ${f.ownerEmail}` : "Convite de colaboração"}
+                        </p>
+                      </button>
+                      <button
+                        onClick={() => {
+                          dismissShareFile(f.id);
+                          setShareFiles((files) => files.filter((file) => file.id !== f.id));
+                        }}
+                        className="px-2 py-1 rounded-lg text-xs text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10"
+                      >
+                        Ocultar
+                      </button>
                       <ArrowRight size={14} className="text-vault-textMuted" />
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}

@@ -1,6 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { GoogleToken } from "../types/vault";
 
 /**
@@ -15,10 +13,16 @@ async function rustFetch(
   headers: Record<string, string> = {},
   body?: string,
 ): Promise<{ ok: boolean; status: number; text: () => string; json: () => unknown }> {
-  const response = await tauriFetch(url, { method, headers, body });
-  const text = await response.text();
+  const raw = await invoke<string>("native_fetch", {
+    method,
+    url,
+    headers,
+    body: body ?? null,
+  });
+  const response = JSON.parse(raw) as { status: number; body: string };
+  const text = response.body;
   return {
-    ok: response.ok,
+    ok: response.status >= 200 && response.status < 300,
     status: response.status,
     text: () => text,
     json: () => JSON.parse(text),
@@ -29,7 +33,11 @@ import {
   OAUTH_ANDROID_REDIRECT, VAULT_DRIVE_FILENAME, OAUTH_PORT,
 } from "../config";
 
-const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email";
+const SCOPES = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/userinfo.email",
+].join(" ");
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 
@@ -59,7 +67,7 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
  * Todas as plataformas → servidor TCP local na porta 8899 + browser externo.
  * No Android, Chrome conecta ao localhost do próprio dispositivo onde o servidor TCP roda.
  */
-export async function startOAuthFlow(forceConsent = true): Promise<GoogleToken> {
+export async function startOAuthFlow(forceConsent = false): Promise<GoogleToken> {
   if (/android/i.test(navigator.userAgent)) {
     return startOAuthAndroid(forceConsent);
   }
@@ -116,6 +124,7 @@ async function exchangeCodeForToken(options: {
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000,
     token_type: data.token_type,
+    client_id: options.clientId,
   };
 }
 
@@ -123,71 +132,14 @@ async function startOAuthAndroid(forceConsent: boolean): Promise<GoogleToken> {
   if (!GOOGLE_ANDROID_CLIENT_ID) {
     throw new Error("Configure VITE_GOOGLE_ANDROID_CLIENT_ID no arquivo .env para usar o Google Drive no Android.");
   }
-
-  const verifier = generateCodeVerifier();
-  const challenge = await generateCodeChallenge(verifier);
-  const state = crypto.randomUUID();
-
-  const params = new URLSearchParams({
-    client_id: GOOGLE_ANDROID_CLIENT_ID,
-    redirect_uri: OAUTH_ANDROID_REDIRECT,
-    response_type: "code",
-    scope: SCOPES,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-    access_type: "offline",
-    ...(forceConsent ? { prompt: "consent" } : {}),
-  });
-
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-
-  const code = await new Promise<string>(async (resolve, reject) => {
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-
-    const timeout = window.setTimeout(() => {
-      finish(() => reject(new Error("Tempo esgotado aguardando autorizacao do Google.")));
-    }, 120000);
-
-    const handleUrls = (urls: string[]) => {
-      for (const url of urls) {
-        if (!url.startsWith(OAUTH_ANDROID_REDIRECT)) continue;
-        try {
-          const receivedCode = parseOAuthRedirect(url, state);
-          window.clearTimeout(timeout);
-          finish(() => resolve(receivedCode));
-        } catch (err) {
-          window.clearTimeout(timeout);
-          finish(() => reject(err));
-        }
-      }
-    };
-
-    try {
-      const unlisten = await onOpenUrl(handleUrls);
-      const current = await getCurrent();
-      if (current) handleUrls(current);
-      await invoke("open_url", { url: authUrl });
-
-      const cleanup = () => { unlisten(); };
-      window.setTimeout(cleanup, 121000);
-    } catch (err) {
-      window.clearTimeout(timeout);
-      finish(() => reject(err));
-    }
-  });
-
-  return exchangeCodeForToken({
-    code,
-    codeVerifier: verifier,
+  const tokenJson = await invoke<string>("start_oauth_android_native", {
     clientId: GOOGLE_ANDROID_CLIENT_ID,
     redirectUri: OAUTH_ANDROID_REDIRECT,
+    scopes: SCOPES,
+    forceConsent,
   });
+  const token = JSON.parse(tokenJson) as GoogleToken;
+  return { ...token, client_id: GOOGLE_ANDROID_CLIENT_ID };
 }
 
 // ─── Desktop OAuth (TCP listener) ─────────────────────────────────────────────
@@ -235,18 +187,21 @@ async function startOAuthDesktop(forceConsent: boolean): Promise<GoogleToken> {
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000,
     token_type: data.token_type,
+    client_id: GOOGLE_CLIENT_ID,
   };
 }
 
 // ─── Refresh token ────────────────────────────────────────────────────────────
 
-export async function refreshAccessToken(refreshToken: string): Promise<GoogleToken> {
+export async function refreshAccessToken(refreshToken: string, clientId = GOOGLE_CLIENT_ID): Promise<GoogleToken> {
   const body: Record<string, string> = {
-    client_id: GOOGLE_CLIENT_ID,
-    client_secret: GOOGLE_CLIENT_SECRET,
+    client_id: clientId,
     grant_type: "refresh_token",
     refresh_token: refreshToken,
   };
+  if (clientId === GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
+    body.client_secret = GOOGLE_CLIENT_SECRET;
+  }
 
   const res = await rustFetch(
     "POST",
@@ -262,6 +217,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<GoogleTo
     refresh_token: refreshToken,
     expires_at: Date.now() + data.expires_in * 1000,
     token_type: data.token_type,
+    client_id: clientId,
   };
 }
 
@@ -293,19 +249,21 @@ export async function findAllVaultFiles(token: GoogleToken): Promise<{ id: strin
 }
 
 /** Returns collaborative .keep files shared with the user or owned by them. */
-export async function findAllCollaborativeVaultFiles(token: GoogleToken): Promise<{ id: string; name: string }[]> {
+export async function findAllCollaborativeVaultFiles(token: GoogleToken): Promise<{ id: string; name: string; ownerEmail?: string }[]> {
   const headers = await authHeaders(token);
-  const query = encodeURIComponent(`name contains 'pk-collab-' and name contains '.keep' and trashed=false`);
-  const res = await rustFetch("GET", `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&orderBy=modifiedTime desc`, headers);
+  const query = encodeURIComponent(`name contains '.keep' and trashed=false`);
+  const res = await rustFetch("GET", `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,owners(emailAddress))&orderBy=modifiedTime desc`, headers);
   if (!res.ok) throw new Error("Erro ao buscar compartilhamentos no Drive");
-  const data = res.json() as { files?: { id: string; name: string }[] };
-  return (data.files ?? []);
+  const data = res.json() as { files?: { id: string; name: string; owners?: { emailAddress?: string }[] }[] };
+  return (data.files ?? [])
+    .filter((file) => file.name.includes("pk-collab-"))
+    .map((file) => ({ id: file.id, name: file.name, ownerEmail: file.owners?.[0]?.emailAddress }));
 }
 
 export async function getFileVersion(token: GoogleToken, fileId: string): Promise<string> {
   const headers = await authHeaders(token);
   const res = await rustFetch("GET", `https://www.googleapis.com/drive/v3/files/${fileId}?fields=headRevisionId,modifiedTime`, headers);
-  if (!res.ok) throw new Error("Erro ao verificar versão do arquivo no Drive");
+  if (!res.ok) throw new Error(`Erro ao verificar versão do arquivo no Drive (${res.status}): ${res.text()}`);
   const data = res.json() as { headRevisionId?: string; modifiedTime?: string };
   return data.headRevisionId ?? data.modifiedTime ?? "";
 }
@@ -313,8 +271,14 @@ export async function getFileVersion(token: GoogleToken, fileId: string): Promis
 export async function downloadVaultFile(token: GoogleToken, fileId: string): Promise<string> {
   const headers = await authHeaders(token);
   const res = await rustFetch("GET", `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, headers);
-  if (!res.ok) throw new Error("Erro ao baixar cofre do Drive");
+  if (!res.ok) throw new Error(`Erro ao baixar cofre do Drive (${res.status}): ${res.text()}`);
   return res.text();
+}
+
+export async function deleteDriveFile(token: GoogleToken, fileId: string): Promise<void> {
+  const headers = await authHeaders(token);
+  const res = await rustFetch("DELETE", `https://www.googleapis.com/drive/v3/files/${fileId}`, headers);
+  if (!res.ok && res.status !== 404) throw new Error(`Erro ao cancelar compartilhamento no Drive (${res.status}): ${res.text()}`);
 }
 
 export async function uploadVaultFile(
@@ -378,7 +342,7 @@ export async function shareFile(
   );
   if (!res.ok) {
     const err = res.json() as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? "Erro ao compartilhar arquivo");
+    throw new Error(err.error?.message ?? `Erro ao compartilhar arquivo (${res.status}): ${res.text()}`);
   }
 }
 
@@ -408,7 +372,7 @@ export async function createSharedVaultFile(
     { ...headers, "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
   );
-  if (!res.ok) throw new Error("Erro ao criar arquivo compartilhado");
+  if (!res.ok) throw new Error(`Erro ao criar arquivo compartilhado (${res.status}): ${res.text()}`);
   const data = res.json() as { id: string };
   return data.id;
 }

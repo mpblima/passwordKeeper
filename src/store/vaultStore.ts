@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { VaultData, PasswordEntry, PasswordGroup, GoogleToken, ViewMode, ActiveView, VaultPermission, DeletionRequest } from "../types/vault";
+import { VaultData, PasswordEntry, PasswordGroup, GoogleToken, ViewMode, ActiveView, VaultPermission, DeletionRequest, SharedSource } from "../types/vault";
 import { encryptData, decryptData } from "../services/crypto";
 import {
   findVaultFile,
@@ -7,12 +7,14 @@ import {
   uploadVaultFile,
   refreshAccessToken,
   getFileVersion,
+  deleteDriveFile,
 } from "../services/googleDrive";
 import {
   pickSavePath,
   pickOpenPath,
   writeVaultFile,
   readVaultFile,
+  getMobileVaultPath,
 } from "../services/localFile";
 import { persistSave, persistLoad } from "../services/storage";
 
@@ -40,6 +42,25 @@ function savePersisted(key: string, value: unknown) {
   persistSave(key, value).catch(() => {});
 }
 
+function isRevokedDriveError(err: unknown): boolean {
+  const msg = String(err);
+  return (
+    msg.includes("(404)") ||
+    msg.includes("(403)") ||
+    msg.includes("File not found") ||
+    msg.includes("notFound") ||
+    msg.includes("insufficientFilePermissions")
+  );
+}
+
+function toSharedGroupId(sourceId: string, localGroupId: string): string {
+  return `shared:${sourceId}:group:${localGroupId}`;
+}
+
+function toSharedEntryId(sourceId: string, localEntryId: string): string {
+  return `shared:${sourceId}:entry:${localEntryId}`;
+}
+
 interface VaultStore {
   // ── Auth / Lock state ──────────────────────────────────────────────────────
   isLocked: boolean;
@@ -56,6 +77,8 @@ interface VaultStore {
 
   // ── Vault data ─────────────────────────────────────────────────────────────
   vault: VaultData | null;
+  sharedSources: SharedSource[];
+  dismissedShareFileIds: string[];
   isDirty: boolean;
   isSyncing: boolean;
   lastSyncAt: string | null;
@@ -88,6 +111,12 @@ interface VaultStore {
   getEncryptedVault: () => Promise<string>;
   mergeSharedEntries: (entries: PasswordEntry[], group?: PasswordGroup | null) => void;
   mergeFromVault: (otherVault: VaultData) => number;
+  addSharedSource: (fileId: string, sharedVault: VaultData, password: string, revision: string | null) => void;
+  refreshSharedSources: () => Promise<boolean>;
+  syncSharedSource: (sourceId: string) => Promise<void>;
+  syncOwnedSharedSourcesFromVault: () => void;
+  removeSharedSource: (sourceId: string, cancelForEveryone?: boolean) => Promise<void>;
+  dismissShareFile: (fileId: string) => void;
 
   // ── Local file ─────────────────────────────────────────────────────────────
   saveToLocalFile: (path?: string) => Promise<void>;
@@ -144,6 +173,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   userInfo: loadPersisted<{ email: string; name: string; picture: string }>("pk_user_info"),
   localVaultPath: loadPersisted<string>("pk_local_vault_path"),
   vault: null,
+  sharedSources: [],
+  dismissedShareFileIds: loadPersisted<string[]>("pk_dismissed_share_file_ids") ?? [],
   isDirty: false,
   isSyncing: false,
   lastSyncAt: null,
@@ -156,8 +187,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   sidebarOpen: !/android/i.test(navigator.userAgent),
 
   setGoogleToken: (token) => {
-    savePersisted("pk_google_token", token);
-    set({ googleToken: token });
+    const existing = get().googleToken;
+    const next = token && existing?.refresh_token && !token.refresh_token
+      ? { ...token, refresh_token: existing.refresh_token }
+      : token;
+    savePersisted("pk_google_token", next);
+    set({ googleToken: next });
   },
   setUserInfo: (info) => {
     savePersisted("pk_user_info", info);
@@ -225,11 +260,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       owner: "",
       ...raw,
     };
-    set({ vault, masterPassword, isLocked: false });
+    set({ vault, masterPassword, isLocked: false, sharedSources: [] });
   },
 
   lockVault: () => {
-    set({ isLocked: true, masterPassword: "", vault: null, selectedEntryId: null });
+    set({ isLocked: true, masterPassword: "", vault: null, sharedSources: [], selectedEntryId: null });
   },
 
   closeVault: () => {
@@ -242,6 +277,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       isLocked: true,
       masterPassword: "",
       vault: null,
+      sharedSources: [],
       selectedEntryId: null,
       selectedGroupId: null,
       activeView: "all",
@@ -331,6 +367,234 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     return newEntriesCount;
   },
 
+  addSharedSource: (fileId, sharedVault, password, revision) => {
+    const sourceId = sharedVault.collaboration?.documentId || fileId;
+    const owner = sharedVault.owner || "Compartilhado";
+    const { userInfo } = get();
+    const role = sharedVault.owner === userInfo?.email
+      ? "owner"
+      : sharedVault.sharedWith?.find((u) => u.email === userInfo?.email)?.role
+        ?? sharedVault.sharedWith?.[0]?.role
+        ?? "reader";
+    const groups = (sharedVault.groups ?? []).map((group) => ({
+      ...group,
+      id: `shared:${sourceId}:group:${group.id}`,
+      sourceGroupId: group.id,
+      sharedSourceId: sourceId,
+    }));
+    const entries = (sharedVault.entries ?? []).map((entry) => ({
+      ...entry,
+      id: `shared:${sourceId}:entry:${entry.id}`,
+      sourceEntryId: entry.id,
+      sharedSourceId: sourceId,
+      groupId: entry.groupId ? `shared:${sourceId}:group:${entry.groupId}` : undefined,
+    }));
+    const remoteEntriesById = new Map(entries.map((entry) => [entry.sourceEntryId ?? entry.id, entry]));
+    const remoteGroupsById = new Map(groups.map((group) => [group.sourceGroupId ?? group.id, group]));
+    set((s) => ({
+      dismissedShareFileIds: s.dismissedShareFileIds.filter((id) => id !== fileId),
+      vault: role === "owner" && s.vault
+        ? {
+            ...s.vault,
+            groups: s.vault.groups.map((group) => {
+              const remote = remoteGroupsById.get(group.id);
+              if (!remote) return group;
+              const { id, sourceGroupId, sharedSourceId, ...data } = remote;
+              return { ...group, ...data };
+            }),
+            entries: s.vault.entries.map((entry) => {
+              const remote = remoteEntriesById.get(entry.id);
+              if (!remote) return entry;
+              const { id, sourceEntryId, sharedSourceId, groupId, ...data } = remote;
+              return { ...entry, ...data };
+            }),
+          }
+        : s.vault,
+      sharedSources: [
+        ...s.sharedSources.filter((source) => source.id !== sourceId && source.fileId !== fileId),
+        {
+          id: sourceId,
+          fileId,
+          name: sharedVault.collaboration?.title || "Compartilhamento",
+          owner,
+          role,
+          collaboration: sharedVault.collaboration,
+          sharedWith: sharedVault.sharedWith ?? [],
+          password,
+          revision,
+          lastSyncAt: now(),
+          updatedBy: owner,
+          updatedAt: now(),
+          groups,
+          entries,
+        },
+      ],
+    }));
+  },
+
+  refreshSharedSources: async () => {
+    const { sharedSources } = get();
+    if (sharedSources.length === 0) return false;
+    const token = await get().ensureValidToken();
+    let changed = false;
+    for (const source of sharedSources) {
+      try {
+        const revision = await getFileVersion(token, source.fileId);
+        if (!revision || revision === source.revision) continue;
+        const encrypted = await downloadVaultFile(token, source.fileId);
+        const json = await decryptData(encrypted, source.password);
+        get().addSharedSource(source.fileId, JSON.parse(json) as VaultData, source.password, revision);
+        changed = true;
+      } catch (err) {
+        if (!isRevokedDriveError(err)) throw err;
+        set((s) => ({
+          sharedSources: s.sharedSources.filter((item) => item.id !== source.id),
+          selectedEntryId: s.selectedEntryId?.includes(`shared:${source.id}:`) ? null : s.selectedEntryId,
+          selectedGroupId: s.selectedGroupId?.includes(`shared:${source.id}:`) ? null : s.selectedGroupId,
+          activeView: s.selectedGroupId?.includes(`shared:${source.id}:`) ? "all" : s.activeView,
+        }));
+        changed = true;
+      }
+    }
+    return changed;
+  },
+
+  syncOwnedSharedSourcesFromVault: () => {
+    const { vault, sharedSources } = get();
+    if (!vault) return;
+
+    const ownedSources = sharedSources.filter((source) => source.role === "owner" && source.collaboration);
+    if (ownedSources.length === 0) return;
+
+    const groupById = new Map(vault.groups.map((group) => [group.id, group]));
+    const nextSources = sharedSources.map((source) => {
+      if (source.role !== "owner" || !source.collaboration) return source;
+
+      const { type, createdFromId } = source.collaboration;
+      let groups: PasswordGroup[] = [];
+      let entries: PasswordEntry[] = [];
+
+      if (type === "vault") {
+        groups = vault.groups.map((group) => ({
+          ...group,
+          id: toSharedGroupId(source.id, group.id),
+          sourceGroupId: group.id,
+          sharedSourceId: source.id,
+        }));
+        entries = vault.entries.map((entry) => ({
+          ...entry,
+          id: toSharedEntryId(source.id, entry.id),
+          sourceEntryId: entry.id,
+          sharedSourceId: source.id,
+          groupId: entry.groupId ? toSharedGroupId(source.id, entry.groupId) : undefined,
+        }));
+      } else if (type === "group" && createdFromId) {
+        const group = groupById.get(createdFromId);
+        if (group) {
+          groups = [{
+            ...group,
+            id: toSharedGroupId(source.id, group.id),
+            sourceGroupId: group.id,
+            sharedSourceId: source.id,
+          }];
+        }
+        entries = vault.entries
+          .filter((entry) => entry.groupId === createdFromId)
+          .map((entry) => ({
+            ...entry,
+            id: toSharedEntryId(source.id, entry.id),
+            sourceEntryId: entry.id,
+            sharedSourceId: source.id,
+            groupId: toSharedGroupId(source.id, createdFromId),
+          }));
+      } else if (type === "entry" && createdFromId) {
+        const entry = vault.entries.find((item) => item.id === createdFromId);
+        if (entry) {
+          entries = [{
+            ...entry,
+            id: toSharedEntryId(source.id, entry.id),
+            sourceEntryId: entry.id,
+            sharedSourceId: source.id,
+            groupId: undefined,
+          }];
+        }
+      }
+
+      return { ...source, groups, entries, updatedAt: now(), updatedBy: get().userInfo?.email ?? source.updatedBy };
+    });
+
+    set({ sharedSources: nextSources });
+    ownedSources.forEach((source) => {
+      get().syncSharedSource(source.id).catch((err) => set({ syncError: String(err) }));
+    });
+  },
+
+  syncSharedSource: async (sourceId) => {
+    const source = get().sharedSources.find((item) => item.id === sourceId);
+    if (!source || source.role === "reader") return;
+    const token = await get().ensureValidToken();
+    const groups = source.groups.map(({ sourceGroupId, sharedSourceId, ...group }) => ({
+      ...group,
+      id: sourceGroupId ?? group.id,
+    }));
+    const entries = source.entries.map(({ sourceEntryId, sharedSourceId, groupId, ...entry }) => ({
+      ...entry,
+      id: sourceEntryId ?? entry.id,
+      groupId: groupId?.startsWith(`shared:${source.id}:group:`)
+        ? groupId.replace(`shared:${source.id}:group:`, "")
+        : groupId,
+      updatedAt: now(),
+    }));
+    const sharedVault: VaultData = {
+      version: "1.0",
+      owner: source.owner,
+      collaboration: source.collaboration ?? {
+        documentId: source.id,
+        type: "vault",
+        title: source.name,
+        createdAt: source.updatedAt ?? now(),
+      },
+      sharedWith: source.sharedWith,
+      deletionRequests: [],
+      groups,
+      entries,
+    };
+    const encrypted = await encryptData(JSON.stringify(sharedVault), source.password);
+    await uploadVaultFile(token, encrypted, source.fileId);
+    const revision = await getFileVersion(token, source.fileId);
+    set((s) => ({
+      sharedSources: s.sharedSources.map((item) => item.id === sourceId
+        ? { ...item, revision, lastSyncAt: now(), updatedBy: get().userInfo?.email, updatedAt: now() }
+        : item),
+    }));
+  },
+
+  removeSharedSource: async (sourceId, cancelForEveryone = false) => {
+    const source = get().sharedSources.find((item) => item.id === sourceId);
+    if (!source) return;
+    if (cancelForEveryone) {
+      if (source.role !== "owner") throw new Error("Apenas o proprietário pode cancelar para todos.");
+      const token = await get().ensureValidToken();
+      await deleteDriveFile(token, source.fileId);
+    }
+    set((s) => ({
+      dismissedShareFileIds: Array.from(new Set([...s.dismissedShareFileIds, source.fileId])),
+      sharedSources: s.sharedSources.filter((item) => item.id !== sourceId),
+      selectedEntryId: s.selectedEntryId?.includes(`shared:${sourceId}:`) ? null : s.selectedEntryId,
+      selectedGroupId: s.selectedGroupId?.includes(`shared:${sourceId}:`) ? null : s.selectedGroupId,
+      activeView: s.selectedGroupId?.includes(`shared:${sourceId}:`) ? "all" : s.activeView,
+    }));
+    savePersisted("pk_dismissed_share_file_ids", get().dismissedShareFileIds);
+  },
+
+  dismissShareFile: (fileId) => {
+    set((s) => {
+      const dismissedShareFileIds = Array.from(new Set([...s.dismissedShareFileIds, fileId]));
+      savePersisted("pk_dismissed_share_file_ids", dismissedShareFileIds);
+      return { dismissedShareFileIds };
+    });
+  },
+
   getEncryptedVault: async () => {
     const { vault, masterPassword } = get();
     if (!vault || !masterPassword) throw new Error("Cofre não está desbloqueado");
@@ -344,7 +608,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     try {
       let savePath = path ?? get().localVaultPath;
       if (!savePath) {
-        savePath = await pickSavePath("meu-cofre.keep");
+        savePath = /android/i.test(navigator.userAgent)
+          ? await getMobileVaultPath()
+          : await pickSavePath("meu-cofre.keep");
         if (!savePath) { set({ isSyncing: false }); return; }
       }
       const encrypted = await get().getEncryptedVault();
@@ -362,10 +628,13 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     try {
       let loadPath: string | null | undefined = path;
       if (!loadPath) {
-        loadPath = await pickOpenPath();
+        loadPath = /android/i.test(navigator.userAgent)
+          ? (get().localVaultPath ?? await getMobileVaultPath())
+          : await pickOpenPath();
         if (!loadPath) { set({ isSyncing: false }); throw new Error("Nenhum arquivo selecionado"); }
       }
       const encrypted = await readVaultFile(loadPath);
+      savePersisted("pk_local_vault_path", loadPath);
       set({ localVaultPath: loadPath, isSyncing: false });
       return encrypted;
     } catch (err) {
@@ -382,9 +651,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     if (Date.now() < googleToken.expires_at - 60000) return googleToken;
     // Token expired — try silent refresh before asking user to log in again
     if (!googleToken.refresh_token) throw new Error("Sessão expirada, faça login novamente");
-    const newToken = await refreshAccessToken(googleToken.refresh_token);
-    savePersisted("pk_google_token", newToken);
-    set({ googleToken: newToken });
+    const newToken = await refreshAccessToken(googleToken.refresh_token, googleToken.client_id);
+    get().setGoogleToken(newToken);
     return newToken;
   },
 
@@ -453,6 +721,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       vault: s.vault ? { ...s.vault, groups: [...s.vault.groups, group] } : s.vault,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   updateGroup: (id, data) => {
@@ -463,6 +732,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         : s.vault,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   deleteGroup: (id) => {
@@ -478,10 +748,34 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       selectedGroupId: s.selectedGroupId === id ? null : s.selectedGroupId,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   addEntry: (data) => {
     if (get().currentUserRole() === "reader") return;
+    if (data.groupId?.startsWith("shared:")) {
+      const sourceId = data.groupId.split(":")[1];
+      const source = get().sharedSources.find((item) => item.id === sourceId);
+      if (!source || source.role === "reader") return;
+      const remoteId = generateId();
+      const { userInfo } = get();
+      const entry: PasswordEntry = {
+        ...data,
+        id: `shared:${sourceId}:entry:${remoteId}`,
+        sourceEntryId: remoteId,
+        sharedSourceId: sourceId,
+        createdBy: userInfo?.email,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      set((s) => ({
+        sharedSources: s.sharedSources.map((item) => item.id === sourceId
+          ? { ...item, entries: [...item.entries, entry] }
+          : item),
+      }));
+      get().syncSharedSource(sourceId).catch((err) => set({ syncError: String(err) }));
+      return;
+    }
     const { userInfo } = get();
     const entry: PasswordEntry = {
       ...data,
@@ -494,35 +788,76 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       vault: s.vault ? { ...s.vault, entries: [...s.vault.entries, entry] } : s.vault,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   updateEntry: (id, data) => {
     if (get().currentUserRole() === "reader") return;
+    if (id.startsWith("shared:")) {
+      const sourceId = id.split(":")[1];
+      const source = get().sharedSources.find((item) => item.id === sourceId);
+      if (!source || source.role === "reader") return;
+      set((s) => ({
+        sharedSources: s.sharedSources.map((item) => item.id === sourceId
+          ? { ...item, entries: item.entries.map((e) => e.id === id ? { ...e, ...data, updatedAt: now() } : e) }
+          : item),
+      }));
+      get().syncSharedSource(sourceId).catch((err) => set({ syncError: String(err) }));
+      return;
+    }
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, entries: s.vault.entries.map((e) => e.id === id ? { ...e, ...data, updatedAt: now() } : e) }
         : s.vault,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   deleteEntry: (id) => {
     if (get().currentUserRole() !== "owner") return;
+    if (id.startsWith("shared:")) {
+      const sourceId = id.split(":")[1];
+      const source = get().sharedSources.find((item) => item.id === sourceId);
+      if (!source || source.role !== "owner") return;
+      set((s) => ({
+        sharedSources: s.sharedSources.map((item) => item.id === sourceId
+          ? { ...item, entries: item.entries.filter((e) => e.id !== id) }
+          : item),
+        selectedEntryId: s.selectedEntryId === id ? null : s.selectedEntryId,
+      }));
+      get().syncSharedSource(sourceId).catch((err) => set({ syncError: String(err) }));
+      return;
+    }
     set((s) => ({
       vault: s.vault ? { ...s.vault, entries: s.vault.entries.filter((e) => e.id !== id) } : s.vault,
       selectedEntryId: s.selectedEntryId === id ? null : s.selectedEntryId,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   toggleFavorite: (id) => {
     if (get().currentUserRole() === "reader") return;
+    if (id.startsWith("shared:")) {
+      const sourceId = id.split(":")[1];
+      const source = get().sharedSources.find((item) => item.id === sourceId);
+      if (!source || source.role === "reader") return;
+      set((s) => ({
+        sharedSources: s.sharedSources.map((item) => item.id === sourceId
+          ? { ...item, entries: item.entries.map((e) => e.id === id ? { ...e, favorite: !e.favorite, updatedAt: now() } : e) }
+          : item),
+      }));
+      get().syncSharedSource(sourceId).catch((err) => set({ syncError: String(err) }));
+      return;
+    }
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, entries: s.vault.entries.map((e) => e.id === id ? { ...e, favorite: !e.favorite, updatedAt: now() } : e) }
         : s.vault,
       isDirty: true,
     }));
+    get().syncOwnedSharedSourcesFromVault();
   },
 
   requestDeletion: (entryId) => {
@@ -608,9 +943,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   getFilteredEntries: () => {
-    const { vault, activeView, selectedGroupId, searchQuery } = get();
+    const { vault, activeView, selectedGroupId, searchQuery, sharedSources } = get();
     if (!vault) return [];
-    let entries = vault.entries;
+    let entries = [
+      ...vault.entries,
+      ...sharedSources.filter((source) => source.role !== "owner").flatMap((source) => source.entries),
+    ];
     if (activeView === "favorites") entries = entries.filter((e) => e.favorite);
     else if (activeView === "group" && selectedGroupId) entries = entries.filter((e) => e.groupId === selectedGroupId);
     if (searchQuery.trim()) {
