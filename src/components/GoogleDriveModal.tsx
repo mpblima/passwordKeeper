@@ -11,22 +11,53 @@ export function GoogleDriveModal({ onClose }: GoogleDriveModalProps) {
   const {
     googleToken, userInfo, driveFileId, isSyncing, lastSyncAt, syncError,
     setGoogleToken, setUserInfo, setDriveFileId,
-    syncToCloud, loadFromCloud, unlockVault, masterPassword,
+    syncToCloud, loadFromCloud, unlockVault, masterPassword, ensureValidToken,
   } = useVaultStore();
 
   const [step, setStep] = useState<"main" | "loading">("main");
   const [error, setError] = useState("");
   const [showLoadConfirm, setShowLoadConfirm] = useState(false);
 
+  function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Tempo esgotado aguardando autorização do Google. Tente novamente.")),
+        ms,
+      );
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
   async function handleConnect() {
     setStep("loading");
     setError("");
     try {
-      // force consent only on first connection to get a refresh_token
-      const token = await startOAuthFlow(true);
+      let token;
+      if (googleToken) {
+        try {
+          token = await withTimeout(ensureValidToken(), 125000);
+        } catch {
+          token = await withTimeout(startOAuthFlow(true), 125000);
+        }
+      } else {
+        token = await withTimeout(startOAuthFlow(true), 125000);
+      }
       setGoogleToken(token);
-      const info = await getUserInfo(token.access_token);
-      setUserInfo(info);
+      try {
+        const info = await getUserInfo(token.access_token);
+        setUserInfo(info);
+      } catch {
+        setUserInfo(null);
+      }
       const fileId = await findVaultFile(token);
       if (fileId) setDriveFileId(fileId);
       setStep("main");

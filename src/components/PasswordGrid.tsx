@@ -11,10 +11,11 @@ interface PasswordGridProps {
 
 export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
   const {
-    vault, activeView, selectedGroupId, selectedEntryId, searchQuery, viewMode,
+    vault, sharedSources, activeView, selectedGroupId, selectedEntryId, searchQuery, viewMode,
     getFilteredEntries, selectEntry, toggleFavorite, setViewMode,
     setActiveView, selectGroup, currentUserRole,
   } = useVaultStore();
+  const receivedSharedSources = sharedSources.filter((source) => source.role !== "owner");
 
   const canAdd = currentUserRole() !== "reader";
 
@@ -39,8 +40,15 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
 
   // ── When inside a group, show only that group's entries ──────────────────────
   if (activeView === "group" && selectedGroupId) {
-    const group = vault?.groups.find((g) => g.id === selectedGroupId);
-    const entries = vault?.entries.filter((e) => e.groupId === selectedGroupId) ?? [];
+    const sharedSource = receivedSharedSources.find((source) =>
+      source.groups.some((g) => g.id === selectedGroupId) || selectedGroupId === `shared:${source.id}:ungrouped`
+    );
+    const group = sharedSource
+      ? sharedSource.groups.find((g) => g.id === selectedGroupId)
+      : vault?.groups.find((g) => g.id === selectedGroupId);
+    const entries = sharedSource
+      ? sharedSource.entries.filter((e) => selectedGroupId.endsWith(":ungrouped") ? !e.groupId : e.groupId === selectedGroupId)
+      : vault?.entries.filter((e) => e.groupId === selectedGroupId) ?? [];
     const filtered = searchQuery
       ? entries.filter((e) =>
           e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -59,8 +67,13 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
           </button>
           <div className="flex items-center gap-2 flex-1 min-w-0">
             {group && <IconDisplay icon={group.icon} size="w-6 h-6" />}
-            <h2 className="text-vault-text font-semibold text-lg truncate">{group?.name ?? "Grupo"}</h2>
+            <h2 className="text-vault-text font-semibold text-lg truncate">{group?.name ?? sharedSource?.name ?? "Grupo"}</h2>
             <span className="text-vault-textMuted text-sm">· {filtered.length}</span>
+            {sharedSource && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-vault-primary/15 text-vault-primary">
+                {sharedSource.owner}
+              </span>
+            )}
           </div>
           <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
@@ -133,6 +146,25 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
 
   // ── Root view: groups + ungrouped entries ────────────────────────────────────
   const groups = vault?.groups ?? [];
+  const sharedGroups = receivedSharedSources.flatMap((source) => {
+    const mapped = source.groups.map((group) => ({ group, source }));
+    const ungroupedCount = source.entries.filter((entry) => !entry.groupId).length;
+    if (ungroupedCount === 0) return mapped;
+    return [
+      ...mapped,
+      {
+        source,
+        group: {
+          id: `shared:${source.id}:ungrouped`,
+          name: source.name,
+          description: "Senhas compartilhadas",
+          icon: "🔗",
+          createdAt: source.updatedAt ?? source.lastSyncAt ?? new Date(0).toISOString(),
+          updatedAt: source.updatedAt ?? source.lastSyncAt ?? new Date(0).toISOString(),
+        },
+      },
+    ];
+  });
   const ungrouped = vault?.entries.filter((e) => !e.groupId) ?? [];
   const filteredUngrouped = searchQuery
     ? ungrouped.filter((e) =>
@@ -144,7 +176,13 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
     ? groups.filter((g) => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : groups;
 
-  const totalVisible = filteredGroups.length + filteredUngrouped.length;
+  const filteredSharedGroups = searchQuery
+    ? sharedGroups.filter(({ group, source }) =>
+        group.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        source.owner.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : sharedGroups;
+  const totalVisible = filteredGroups.length + filteredUngrouped.length + filteredSharedGroups.length;
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
@@ -152,7 +190,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
         <div className="flex-1">
           <h2 className="text-vault-text font-semibold text-lg">Cofre</h2>
           <p className="text-vault-textMuted text-sm">
-            {groups.length} grupo{groups.length !== 1 ? "s" : ""} · {vault?.entries.length ?? 0} senha{vault?.entries.length !== 1 ? "s" : ""}
+            {groups.length + sharedGroups.length} grupo{groups.length + sharedGroups.length !== 1 ? "s" : ""} · {((vault?.entries.length ?? 0) + receivedSharedSources.flatMap((source) => source.entries).length)} senha{((vault?.entries.length ?? 0) + receivedSharedSources.flatMap((source) => source.entries).length) !== 1 ? "s" : ""}
           </p>
         </div>
         <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
@@ -213,6 +251,41 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
                       <EntryListItem key={entry.id} entry={entry} selected={selectedEntryId === entry.id}
                         onSelect={() => selectEntry(entry.id === selectedEntryId ? null : entry.id)}
                         onToggleFavorite={() => toggleFavorite(entry.id)} />
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {filteredSharedGroups.length > 0 && (
+              <section>
+                <p className="text-vault-textMuted text-xs font-semibold uppercase tracking-wider mb-3">Compartilhados</p>
+                {viewMode === "grid" ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
+                    {filteredSharedGroups.map(({ group, source }) => (
+                      <GroupCard
+                        key={group.id}
+                        group={{ ...group, description: `${source.owner} · ${source.role}` }}
+                        entryCount={group.id.endsWith(":ungrouped")
+                          ? source.entries.filter((e) => !e.groupId).length
+                          : source.entries.filter((e) => e.groupId === group.id).length}
+                        onOpen={() => selectGroup(group.id)}
+                        onAddEntry={source.role !== "reader" && !group.id.endsWith(":ungrouped") ? () => onAddEntry(group.id) : undefined}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredSharedGroups.map(({ group, source }) => (
+                      <GroupListItem
+                        key={group.id}
+                        group={{ ...group, description: `${source.owner} · ${source.role}` }}
+                        entryCount={group.id.endsWith(":ungrouped")
+                          ? source.entries.filter((e) => !e.groupId).length
+                          : source.entries.filter((e) => e.groupId === group.id).length}
+                        onOpen={() => selectGroup(group.id)}
+                        onAddEntry={source.role !== "reader" && !group.id.endsWith(":ungrouped") ? () => onAddEntry(group.id) : undefined}
+                      />
                     ))}
                   </div>
                 )}

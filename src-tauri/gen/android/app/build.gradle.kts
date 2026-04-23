@@ -18,6 +18,7 @@ android {
     namespace = "com.passwordkeeper.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.googleusercontent.apps.288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl"
         applicationId = "com.passwordkeeper.app"
         minSdk = 24
         targetSdk = 36
@@ -62,6 +63,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("net.openid:appauth:0.11.1")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

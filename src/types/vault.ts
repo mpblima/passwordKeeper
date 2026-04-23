@@ -26,6 +26,8 @@ export interface DeletionRequest {
 
 export interface PasswordEntry {
   id: string;
+  sourceEntryId?: string;
+  sharedSourceId?: string;
   name: string;
   description: string;
   icon: string;
@@ -42,6 +44,8 @@ export interface PasswordEntry {
 
 export interface PasswordGroup {
   id: string;
+  sourceGroupId?: string;
+  sharedSourceId?: string;
   name: string;
   description: string;
   icon: string;
@@ -59,11 +63,29 @@ export interface VaultData {
   entries: PasswordEntry[];
 }
 
+export interface SharedSource {
+  id: string;
+  fileId: string;
+  name: string;
+  owner: string;
+  role: VaultPermission;
+  collaboration?: VaultCollaboration;
+  sharedWith: SharedUser[];
+  password: string;
+  revision: string | null;
+  lastSyncAt: string | null;
+  updatedBy?: string;
+  updatedAt?: string;
+  groups: PasswordGroup[];
+  entries: PasswordEntry[];
+}
+
 export interface GoogleToken {
   access_token: string;
   refresh_token?: string;
   expires_at: number;
   token_type: string;
+  client_id?: string;
 }
 
 export type ViewMode = "grid" | "list";

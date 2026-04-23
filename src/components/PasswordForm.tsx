@@ -12,7 +12,10 @@ interface PasswordFormProps {
 }
 
 export function PasswordForm({ entry, defaultGroupId, onClose }: PasswordFormProps) {
-  const { vault, addEntry, updateEntry } = useVaultStore();
+  const { vault, sharedSources, addEntry, updateEntry } = useVaultStore();
+  const entrySource = entry?.sharedSourceId
+    ? sharedSources.find((source) => source.id === entry.sharedSourceId)
+    : null;
   const [showPassword, setShowPassword] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
@@ -249,6 +252,18 @@ export function PasswordForm({ entry, defaultGroupId, onClose }: PasswordFormPro
                     {g.icon} {g.name}
                   </option>
                 ))}
+                {entrySource?.groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.icon} {g.name}
+                  </option>
+                ))}
+                {!entrySource && sharedSources.flatMap((source) =>
+                  source.groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.icon} {source.owner} / {g.name}
+                    </option>
+                  ))
+                )}
               </select>
               <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-vault-textMuted pointer-events-none" />
             </div>

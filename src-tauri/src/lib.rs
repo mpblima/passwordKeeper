@@ -1,6 +1,11 @@
 #[cfg(not(target_os = "android"))]
 use base64::Engine;
 
+#[cfg(target_os = "android")]
+use std::sync::{Mutex, OnceLock};
+
+use tauri::Manager;
+
 // ─── HTTP via Java/JNI (Android) ──────────────────────────────────────────────
 //
 // No Android, código NDK não consegue fazer DNS nem sockets TCP para a internet:
@@ -107,6 +112,174 @@ async fn android_http_request(
     })
     .await
     .map_err(|e| format!("spawn_blocking: {}", e))?
+}
+
+#[cfg(target_os = "android")]
+type OAuthResultSender = tokio::sync::oneshot::Sender<Result<String, String>>;
+
+#[cfg(target_os = "android")]
+fn android_oauth_sender() -> &'static Mutex<Option<OAuthResultSender>> {
+    static SENDER: OnceLock<Mutex<Option<OAuthResultSender>>> = OnceLock::new();
+    SENDER.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "android")]
+fn finish_android_oauth(result: Result<String, String>) {
+    if let Some(sender) = android_oauth_sender().lock().ok().and_then(|mut guard| guard.take()) {
+        let _ = sender.send(result);
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn start_oauth_android_native(
+    client_id: String,
+    redirect_uri: String,
+    scopes: String,
+    force_consent: bool,
+) -> Result<String, String> {
+    use jni::{
+        objects::{JClass, JObject, JString, JValue},
+        JavaVM,
+    };
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    {
+        let mut guard = android_oauth_sender()
+            .lock()
+            .map_err(|_| "Falha ao preparar autenticacao Android".to_string())?;
+        if guard.is_some() {
+            return Err("Ja existe uma autenticacao em andamento.".to_string());
+        }
+        *guard = Some(tx);
+    }
+
+    let start_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let android_ctx = ndk_context::android_context();
+        let vm = unsafe { JavaVM::from_raw(android_ctx.vm().cast()) }
+            .map_err(|e| format!("JavaVM: {}", e))?;
+        let mut env = vm.attach_current_thread()
+            .map_err(|e| format!("attach: {}", e))?;
+
+        let ctx_obj = unsafe {
+            JObject::from_raw(android_ctx.context() as jni::sys::jobject)
+        };
+        let loader = env.call_method(
+            &ctx_obj, "getClassLoader", "()Ljava/lang/ClassLoader;", &[],
+        ).map_err(|e| { let _ = env.exception_clear(); format!("getClassLoader: {}", e) })?
+        .l().map_err(|e| e.to_string())?;
+
+        let class_name = env.new_string("com.passwordkeeper.app.GoogleOAuthManager")
+            .map_err(|e| e.to_string())?;
+        let loaded = env.call_method(
+            &loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&class_name)],
+        ).map_err(|e| { let _ = env.exception_clear(); format!("loadClass: {}", e) })?
+        .l().map_err(|e| e.to_string())?;
+        let manager_class = JClass::from(loaded);
+
+        let jclient_id = env.new_string(&client_id).map_err(|e| e.to_string())?;
+        let jredirect_uri = env.new_string(&redirect_uri).map_err(|e| e.to_string())?;
+        let jscopes = env.new_string(&scopes).map_err(|e| e.to_string())?;
+
+        env.call_static_method(
+            &manager_class,
+            "start",
+            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V",
+            &[
+                JValue::Object(&ctx_obj),
+                JValue::Object(&jclient_id),
+                JValue::Object(&jredirect_uri),
+                JValue::Object(&jscopes),
+                JValue::Bool(if force_consent { 1 } else { 0 }),
+            ],
+        )
+        .map_err(|e| {
+            let msg = if env.exception_check().unwrap_or(false) {
+                if let Ok(exc) = env.exception_occurred() {
+                    let _ = env.exception_clear();
+                    env.call_method(&exc, "toString", "()Ljava/lang/String;", &[])
+                        .ok()
+                        .and_then(|v| v.l().ok())
+                        .filter(|o| !o.is_null())
+                        .and_then(|o| {
+                            let js = JString::from(o);
+                            env.get_string(&js).ok().map(String::from)
+                        })
+                        .unwrap_or_else(|| e.to_string())
+                } else {
+                    e.to_string()
+                }
+            } else {
+                e.to_string()
+            };
+            format!("Nao foi possivel iniciar o login do Google: {}", msg)
+        })?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Falha ao iniciar autenticacao Android: {}", e));
+
+    if let Err(err) = start_result.and_then(|v| v) {
+        let _ = android_oauth_sender().lock().map(|mut guard| {
+            let _ = guard.take();
+        });
+        return Err(err);
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+        Ok(result) => result
+            .map_err(|_| "Fluxo de autenticacao Android foi interrompido.".to_string())?,
+        Err(_) => {
+            let _ = android_oauth_sender().lock().map(|mut guard| {
+                let _ = guard.take();
+            });
+            Err("Tempo esgotado aguardando autenticacao do Google no Android.".to_string())
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn start_oauth_android_native(
+    _client_id: String,
+    _redirect_uri: String,
+    _scopes: String,
+    _force_consent: bool,
+) -> Result<String, String> {
+    Err("OAuth Android nativo nao esta disponivel nesta plataforma.".to_string())
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_passwordkeeper_app_GoogleOAuthBridge_finishOAuth(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    result_json: jni::objects::JString,
+    error: jni::objects::JString,
+) {
+    let error_str = if error.is_null() {
+        None
+    } else {
+        env.get_string(&error).ok().map(String::from)
+    };
+
+    if let Some(message) = error_str.filter(|s| !s.is_empty()) {
+        finish_android_oauth(Err(message));
+        return;
+    }
+
+    let result_str = if result_json.is_null() {
+        None
+    } else {
+        env.get_string(&result_json).ok().map(String::from)
+    };
+
+    match result_str.filter(|s| !s.is_empty()) {
+        Some(json) => finish_android_oauth(Ok(json)),
+        None => finish_android_oauth(Err("Resposta Android vazia.".to_string())),
+    }
 }
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────
@@ -456,6 +629,20 @@ async fn read_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_default_vault_path(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Nao foi possivel obter diretorio do app: {}", e))?;
+
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Nao foi possivel preparar diretorio do cofre: {}", e))?;
+
+    Ok(dir.join("meu-cofre.keep").to_string_lossy().into_owned())
+}
+
 /// Encerra o processo imediatamente.
 #[tauri::command]
 fn exit_app() {
@@ -476,10 +663,12 @@ pub fn run() {
 
     let builder = builder.invoke_handler(tauri::generate_handler![
         start_oauth,
+        start_oauth_android_native,
         open_url,
         native_fetch,
         write_file,
         read_file,
+        get_default_vault_path,
         pick_and_read_image,
         exit_app,
     ]);

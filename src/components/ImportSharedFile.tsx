@@ -2,17 +2,30 @@ import { useEffect, useState } from "react";
 import { X, Share2, Lock, Check, AlertCircle, Eye, EyeOff, Loader2, RefreshCw, ArrowRight } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
 import { findAllCollaborativeVaultFiles, downloadVaultFile, getFileVersion } from "../services/googleDrive";
+import { decryptData } from "../services/crypto";
+import { VaultData } from "../types/vault";
 
 interface ImportSharedFileProps {
   onClose: () => void;
 }
 
+function formatShareFileName(name: string): string {
+  return name
+    .replace(/^pk-collab-/, "")
+    .replace(/-\d+\.keep$/, "")
+    .replace(/\.keep$/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
   const {
-    googleToken, userInfo, ensureValidToken, unlockVault,
-    setDriveFileId, setDriveRevision,
+    googleToken, userInfo, ensureValidToken, addSharedSource,
+    dismissedShareFileIds, dismissShareFile,
   } = useVaultStore();
-  const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
+  const [files, setFiles] = useState<{ id: string; name: string; ownerEmail?: string }[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -25,7 +38,8 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
     setErrorMsg("");
     try {
       const token = await ensureValidToken();
-      const result = await findAllCollaborativeVaultFiles(token);
+      const result = (await findAllCollaborativeVaultFiles(token))
+        .filter((file) => !dismissedShareFileIds.includes(file.id));
       setFiles(result);
       setStep("pick");
     } catch (err) {
@@ -42,10 +56,10 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
     try {
       const token = await ensureValidToken();
       const encrypted = await downloadVaultFile(token, selectedFileId);
-      await unlockVault(encrypted, password);
+      const decrypted = await decryptData(encrypted, password);
+      const sharedVault = JSON.parse(decrypted) as VaultData;
       const revision = await getFileVersion(token, selectedFileId);
-      setDriveFileId(selectedFileId);
-      setDriveRevision(revision);
+      addSharedSource(selectedFileId, sharedVault, password, revision);
       setStep("done");
       setTimeout(onClose, 800);
     } catch {
@@ -90,6 +104,18 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
                 {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
                 Atualizar compartilhamentos
               </button>
+              {files.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    files.forEach((file) => dismissShareFile(file.id));
+                    setFiles([]);
+                  }}
+                  className="w-full py-2 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textMuted hover:text-vault-danger text-xs transition-colors"
+                >
+                  Ocultar todos os convites desta lista
+                </button>
+              )}
 
               {loading ? (
                 <div className="text-center py-8 text-vault-textMuted text-sm">
@@ -107,15 +133,31 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
               ) : (
                 <div className="space-y-2">
                   {files.map((file) => (
-                    <button
+                    <div
                       key={file.id}
-                      onClick={() => { setSelectedFileId(file.id); setStep("password"); }}
                       className="w-full flex items-center gap-3 p-3 bg-vault-sidebar border border-vault-border hover:border-vault-primary/40 rounded-xl transition-colors text-left"
                     >
                       <Share2 size={16} className="text-vault-primary" />
-                      <span className="text-vault-textSecondary text-sm flex-1 truncate">{file.name}</span>
+                      <button
+                        onClick={() => { setSelectedFileId(file.id); setStep("password"); }}
+                        className="flex-1 min-w-0 text-left"
+                      >
+                        <p className="text-vault-textSecondary text-sm truncate">{formatShareFileName(file.name)}</p>
+                        <p className="text-vault-textMuted text-xs">
+                          {file.ownerEmail ? `Compartilhado por ${file.ownerEmail}` : "Convite de colaboração"}
+                        </p>
+                      </button>
+                      <button
+                        onClick={() => {
+                          dismissShareFile(file.id);
+                          setFiles((current) => current.filter((item) => item.id !== file.id));
+                        }}
+                        className="px-2 py-1 rounded-lg text-xs text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10"
+                      >
+                        Ocultar
+                      </button>
                       <ArrowRight size={14} className="text-vault-textMuted" />
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -130,7 +172,9 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
             <form onSubmit={handleOpen} className="space-y-4">
               <div className="flex items-center gap-2 p-3 bg-vault-success/10 border border-vault-success/20 rounded-xl">
                 <Check size={15} className="text-vault-success flex-shrink-0" />
-                <p className="text-sm text-vault-success truncate">{selectedFile?.name}</p>
+                <p className="text-sm text-vault-success truncate">
+                  {selectedFile ? formatShareFileName(selectedFile.name) : "Compartilhamento"}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
