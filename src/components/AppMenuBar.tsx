@@ -9,7 +9,12 @@ import { SharedUsersModal } from "./SharedUsersModal";
 import { BackupModal } from "./BackupModal";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 
-export function AppMenuBar() {
+interface AppMenuBarProps {
+  onForceSync?: () => void;
+  isForceSyncing?: boolean;
+}
+
+export function AppMenuBar({ onForceSync, isForceSyncing }: AppMenuBarProps) {
   const { saveToLocalFile, localVaultPath, closeVault, currentUserRole, toggleSidebar, sidebarOpen } = useVaultStore();
   const { isAndroid } = usePlatform();
   const [openMenu, setOpenMenu] = useState<"file" | "utils" | "help" | null>(null);
@@ -96,6 +101,11 @@ export function AppMenuBar() {
         {/* Utilitários dropdown */}
         {openMenu === "utils" && (
           <Dropdown anchor="left-[72px] top-9">
+            <MenuItem
+              icon={<RefreshCw size={14} className={isForceSyncing ? "animate-spin" : ""} />}
+              label={isForceSyncing ? "Sincronizando..." : "Sincronizar agora"}
+              onClick={() => { close(); onForceSync?.(); }}
+            />
             <MenuItem icon={<RefreshCw size={14} />} label="Backup & Sincronização..." onClick={() => { close(); setShowBackup(true); }} />
             <MenuItem icon={<Key size={14} />} label="Trocar senha do cofre..." onClick={() => { close(); setShowChangePassword(true); }} />
           </Dropdown>

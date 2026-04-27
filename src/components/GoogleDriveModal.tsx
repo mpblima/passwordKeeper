@@ -58,8 +58,16 @@ export function GoogleDriveModal({ onClose }: GoogleDriveModalProps) {
       } catch {
         setUserInfo(null);
       }
-      const fileId = await findVaultFile(token);
-      if (fileId) setDriveFileId(fileId);
+      // Only look for a regular vault file if the current vault is not a collab vault.
+      // If it IS a collab vault, driveFileId already points to the collab file — keep it.
+      const { vault, driveFileId: currentFileId } = useVaultStore.getState();
+      if (!vault?.collaboration) {
+        const fileId = await findVaultFile(token);
+        if (fileId) setDriveFileId(fileId);
+      } else if (!currentFileId) {
+        const fileId = await findVaultFile(token);
+        if (fileId) setDriveFileId(fileId);
+      }
       setStep("main");
     } catch (err) {
       setError(String(err));

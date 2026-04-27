@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, FolderOpen, LogOut, Power, X } from "lucide-react";
+import { ShieldCheck, Search, Star, LayoutGrid, Plus, Lock, Cloud, Edit, Trash2, Share2, HardDrive, Flag, Info, FolderOpen, LogOut, Power, X, RefreshCw, AlertCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
 import { usePlatform } from "../hooks/usePlatform";
@@ -15,12 +15,15 @@ import { IconDisplay } from "./IconDisplay";
 
 interface SidebarProps {
   onAddEntry: (groupId?: string) => void;
+  onForceSync?: () => void;
+  isForceSyncing?: boolean;
 }
 
-export function Sidebar({ onAddEntry }: SidebarProps) {
+export function Sidebar({ onAddEntry, onForceSync, isForceSyncing }: SidebarProps) {
   const {
     vault, activeView, selectedGroupId, searchQuery, googleToken, userInfo,
     isSyncing, isDirty, localVaultPath, sidebarOpen, sharedSources,
+    syncError, clearSyncError,
     setActiveView, selectGroup, setSearchQuery, lockVault,
     saveToLocalFile, updateEntry, removeSharedSource,
   } = useVaultStore();
@@ -280,7 +283,7 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
               >
                 {userInfo?.email ?? "Drive conectado"}
               </button>
-              {isSyncing && (
+              {(isSyncing || isForceSyncing) && (
                 <span className="w-3 h-3 rounded-full border border-vault-primary border-t-transparent animate-spin flex-shrink-0" />
               )}
               <button
@@ -299,6 +302,32 @@ export function Sidebar({ onAddEntry }: SidebarProps) {
               <Cloud size={16} className="text-vault-textMuted" />
               <span className="flex-1 text-left truncate text-xs text-vault-textMuted">Google Drive</span>
             </button>
+          )}
+
+          {/* Force sync button — visible when connected and there are shared sources or dirty state */}
+          {googleToken && (isDirty || sharedSources.length > 0) && (
+            <button
+              onClick={onForceSync}
+              disabled={isSyncing || isForceSyncing}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-colors hover:bg-vault-card disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Forçar sincronização agora"
+            >
+              <RefreshCw size={16} className={`${isForceSyncing ? "animate-spin text-vault-primary" : "text-vault-textMuted"}`} />
+              <span className={`flex-1 text-left text-xs ${isForceSyncing ? "text-vault-primary" : "text-vault-textMuted"}`}>
+                {isForceSyncing ? "Sincronizando..." : "Sincronizar agora"}
+              </span>
+            </button>
+          )}
+
+          {/* Sync error alert */}
+          {syncError && (
+            <div className="mx-1 flex items-start gap-2 px-3 py-2 rounded-xl bg-vault-danger/10 border border-vault-danger/20">
+              <AlertCircle size={14} className="text-vault-danger flex-shrink-0 mt-0.5" />
+              <p className="flex-1 text-xs text-vault-danger leading-snug line-clamp-3">{syncError}</p>
+              <button onClick={clearSyncError} className="text-vault-danger hover:opacity-70 flex-shrink-0">
+                <X size={13} />
+              </button>
+            </div>
           )}
 
           {/* Deletion requests — only visible to owner when there are pending ones */}

@@ -46,10 +46,17 @@ function isRevokedDriveError(err: unknown): boolean {
   const msg = String(err);
   return (
     msg.includes("(404)") ||
-    msg.includes("(403)") ||
     msg.includes("File not found") ||
     msg.includes("notFound") ||
-    msg.includes("insufficientFilePermissions")
+    (msg.includes("(403)") && msg.includes("insufficientFilePermissions"))
+  );
+}
+
+function isInsufficientScopeError(err: unknown): boolean {
+  const msg = String(err);
+  return (
+    (msg.includes("(403)") && msg.includes("has not granted the app")) ||
+    (msg.includes("(403)") && msg.includes("write access"))
   );
 }
 
@@ -127,6 +134,8 @@ interface VaultStore {
   loadFromCloud: () => Promise<string>;
   refreshFromCloudIfChanged: () => Promise<boolean>;
   ensureValidToken: () => Promise<GoogleToken>;
+  forceSync: () => Promise<void>;
+  clearSyncError: () => void;
 
   // ── Groups ─────────────────────────────────────────────────────────────────
   addGroup: (data: Omit<PasswordGroup, "id" | "createdAt" | "updatedAt">) => void;
@@ -391,45 +400,76 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     }));
     const remoteEntriesById = new Map(entries.map((entry) => [entry.sourceEntryId ?? entry.id, entry]));
     const remoteGroupsById = new Map(groups.map((group) => [group.sourceGroupId ?? group.id, group]));
-    set((s) => ({
-      dismissedShareFileIds: s.dismissedShareFileIds.filter((id) => id !== fileId),
-      vault: role === "owner" && s.vault
-        ? {
-            ...s.vault,
-            groups: s.vault.groups.map((group) => {
-              const remote = remoteGroupsById.get(group.id);
-              if (!remote) return group;
-              const { id, sourceGroupId, sharedSourceId, ...data } = remote;
-              return { ...group, ...data };
-            }),
-            entries: s.vault.entries.map((entry) => {
-              const remote = remoteEntriesById.get(entry.id);
-              if (!remote) return entry;
-              const { id, sourceEntryId, sharedSourceId, groupId, ...data } = remote;
-              return { ...entry, ...data };
-            }),
-          }
-        : s.vault,
-      sharedSources: [
-        ...s.sharedSources.filter((source) => source.id !== sourceId && source.fileId !== fileId),
-        {
-          id: sourceId,
-          fileId,
-          name: sharedVault.collaboration?.title || "Compartilhamento",
-          owner,
-          role,
-          collaboration: sharedVault.collaboration,
-          sharedWith: sharedVault.sharedWith ?? [],
-          password,
-          revision,
-          lastSyncAt: now(),
-          updatedBy: owner,
-          updatedAt: now(),
-          groups,
-          entries,
-        },
-      ],
-    }));
+    set((s) => {
+      let newVault = s.vault;
+      let isDirty = s.isDirty;
+
+      if (role === "owner" && s.vault) {
+        const existingEntryIds = new Set(s.vault.entries.map((e) => e.id));
+
+        // Update entries that exist in both local vault and remote
+        let anyUpdated = false;
+        const updatedEntries = s.vault.entries.map((entry) => {
+          const remote = remoteEntriesById.get(entry.id);
+          if (!remote) return entry;
+          const { id, sourceEntryId, sharedSourceId, groupId, ...data } = remote;
+          const merged = { ...entry, ...data };
+          if (merged.updatedAt !== entry.updatedAt) anyUpdated = true;
+          return merged;
+        });
+
+        // Add entries created by collaborators that don't exist in the local vault yet
+        const newEntries = entries
+          .filter((e) => e.sourceEntryId != null && !existingEntryIds.has(e.sourceEntryId))
+          .map(({ id, sourceEntryId, sharedSourceId, groupId, ...data }) => ({
+            ...data,
+            id: sourceEntryId!,
+            groupId: groupId?.startsWith(`shared:${sourceId}:group:`)
+              ? groupId.replace(`shared:${sourceId}:group:`, "")
+              : groupId,
+          }));
+
+        const updatedGroups = s.vault.groups.map((group) => {
+          const remote = remoteGroupsById.get(group.id);
+          if (!remote) return group;
+          const { id, sourceGroupId, sharedSourceId, ...data } = remote;
+          return { ...group, ...data };
+        });
+
+        if (newEntries.length > 0 || anyUpdated) isDirty = true;
+
+        newVault = {
+          ...s.vault,
+          groups: updatedGroups,
+          entries: [...updatedEntries, ...newEntries],
+        };
+      }
+
+      return {
+        dismissedShareFileIds: s.dismissedShareFileIds.filter((id) => id !== fileId),
+        vault: newVault,
+        isDirty,
+        sharedSources: [
+          ...s.sharedSources.filter((source) => source.id !== sourceId && source.fileId !== fileId),
+          {
+            id: sourceId,
+            fileId,
+            name: sharedVault.collaboration?.title || "Compartilhamento",
+            owner,
+            role,
+            collaboration: sharedVault.collaboration,
+            sharedWith: sharedVault.sharedWith ?? [],
+            password,
+            revision,
+            lastSyncAt: now(),
+            updatedBy: owner,
+            updatedAt: now(),
+            groups,
+            entries,
+          },
+        ],
+      };
+    });
   },
 
   refreshSharedSources: async () => {
@@ -654,6 +694,39 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     const newToken = await refreshAccessToken(googleToken.refresh_token, googleToken.client_id);
     get().setGoogleToken(newToken);
     return newToken;
+  },
+
+  clearSyncError: () => set({ syncError: null }),
+
+  forceSync: async () => {
+    const { googleToken, localVaultPath, isDirty, vault } = get();
+    const isAndroid = /android/i.test(navigator.userAgent);
+    // Block syncToCloud only when the vault OWNER opens a collab file as main vault.
+    // Editors open with the share password as masterPassword, so their syncToCloud is correct.
+    const isOwnerOfCollabVault = !!vault?.collaboration && get().currentUserRole() === "owner";
+    set({ syncError: null });
+    try {
+      if (isDirty && !isOwnerOfCollabVault) {
+        if (localVaultPath || isAndroid) await get().saveToLocalFile(localVaultPath ?? undefined);
+        if (googleToken) await get().syncToCloud();
+      }
+      // Propagate owner's vault changes to all owned shared sources
+      get().syncOwnedSharedSourcesFromVault();
+      // Retry any writable received shared sources (editor role)
+      const writables = get().sharedSources.filter((s) => s.role !== "reader");
+      for (const source of writables) {
+        await get().syncSharedSource(source.id);
+      }
+      // Pull latest from all shared sources
+      await get().refreshSharedSources();
+    } catch (err) {
+      if (isInsufficientScopeError(err)) {
+        get().setGoogleToken(null);
+        set({ syncError: "Permissões do Google Drive desatualizadas. Vá em Arquivo → Google Drive e reconecte sua conta." });
+      } else {
+        set({ syncError: String(err) });
+      }
+    }
   },
 
   syncToCloud: async () => {
