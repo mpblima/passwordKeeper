@@ -19,7 +19,7 @@ Aplicativo multiplataforma de cofre de senhas feito com Tauri, React e TypeScrip
 
 O Password Keeper salva o cofre como um documento criptografado. A senha mestra nunca e enviada ao Google Drive: ela e usada localmente para derivar a chave que criptografa e descriptografa o conteudo.
 
-O compartilhamento cria um documento colaborativo `.keep` no Drive, com prefixo `pk-collab-`. A pessoa convidada recebe uma notificacao do Google e abre esse documento pelo app em **Abrir compartilhamento**. Enquanto o cofre compartilhado estiver aberto, o app verifica mudancas no Drive periodicamente e aplica atualizacoes quando nao ha edicoes locais pendentes.
+O compartilhamento usa o mesmo arquivo principal do cofre no Google Drive. O arquivo usa um envelope criptografico: a senha mestra do proprietario e cada senha de compartilhamento autorizada destravam a mesma chave interna do cofre. Assim, a pessoa convidada nao precisa saber a senha mestra; ela abre o cofre com a senha de compartilhamento em **Abrir compartilhamento** ou **Abrir do Google Drive**, e a interface mostra apenas o escopo autorizado. Quando o convidado tem permissao de edicao, as alteracoes sao salvas no arquivo principal e ficam disponiveis para o proprietario apos a sincronizacao.
 
 ## Requisitos
 
@@ -96,12 +96,14 @@ Em CI/CD, configure os secrets:
 
 Ao compartilhar uma senha, grupo ou cofre:
 
-1. O app cria um documento colaborativo `.keep` criptografado no Google Drive
-2. O documento e compartilhado com o email Google informado
-3. O Google envia uma notificacao ao destinatario
-4. Voce envia a senha do compartilhamento por outro canal
-5. O destinatario abre **Abrir compartilhamento** no app
-6. As alteracoes passam a ser sincronizadas pelo Drive
+1. O app garante que o cofre principal esteja salvo no Google Drive
+2. O arquivo principal e compartilhado com o email Google informado
+3. O escopo e a permissao ficam registrados em `sharedWith` dentro do cofre
+4. O app adiciona uma senha de compartilhamento ao envelope criptografico do arquivo
+5. Voce envia a senha de compartilhamento por outro canal, sem revelar a senha mestra
+6. O destinatario abre o mesmo cofre pelo app usando Google Drive e a senha de compartilhamento
+7. A interface filtra o conteudo permitido para aquele usuario
+8. Alteracoes autorizadas sao sincronizadas de volta para o arquivo principal
 
 Permissoes:
 
@@ -109,12 +111,12 @@ Permissoes:
 - **Editor** pode criar e editar
 - **Proprietario** pode criar, editar, excluir e gerenciar acessos
 
-Observacao: a colaboracao atual e baseada em sincronizacao periodica com o Google Drive. Ela nao e um editor em tempo real com websocket/CRDT como o Google Docs.
+Observacao: a colaboracao atual e baseada em sincronizacao periodica com o Google Drive sobre o arquivo principal. Ela nao e um editor em tempo real com websocket/CRDT como o Google Docs.
 
 ## Seguranca
 
 - Senhas sao criptografadas localmente antes de salvar ou enviar ao Drive
-- O arquivo no Drive e opaco sem a senha correta
+- O arquivo no Drive e opaco sem a senha mestra ou uma senha de compartilhamento autorizada
 - O app usa AES-256-GCM e PBKDF2 com 310.000 iteracoes
 - O token Google nao e persistido no fallback de `localStorage`
 - O Tauri usa CSP e permissao HTTP restrita aos endpoints Google necessarios

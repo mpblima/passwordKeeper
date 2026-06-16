@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { X, Share2, Mail, Copy, Check, AlertCircle, Lock, ShieldCheck, Eye, Edit } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
-import { PasswordEntry, PasswordGroup, VaultData, VaultPermission } from "../types/vault";
-import { encryptData } from "../services/crypto";
-import { createSharedVaultFile, getFileVersion, shareFile, startOAuthFlow } from "../services/googleDrive";
+import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
+import { shareFile, startOAuthFlow } from "../services/googleDrive";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface ShareModalProps {
   target: PasswordEntry | PasswordGroup | null;
@@ -15,25 +15,28 @@ const ROLE_OPTIONS: { value: VaultPermission; label: string; desc: string; icon:
   {
     value: "reader",
     label: "Somente leitura",
-    desc: "Pode visualizar as senhas, mas não editar nem criar.",
+    desc: "Pode visualizar as senhas autorizadas, mas não editar nem criar.",
     icon: <Eye size={15} />,
   },
   {
     value: "editor",
     label: "Editor",
-    desc: "Pode visualizar e criar novas senhas. Não pode deletar.",
+    desc: "Pode visualizar, editar e criar dentro do escopo autorizado.",
     icon: <Edit size={15} />,
   },
   {
     value: "owner",
     label: "Proprietário",
-    desc: "Acesso total, incluindo deletar senhas e gerenciar compartilhamentos.",
+    desc: "Acesso total ao escopo autorizado, incluindo exclusões permitidas.",
     icon: <ShieldCheck size={15} />,
   },
 ];
 
 export function ShareModal({ target, type, onClose }: ShareModalProps) {
-  const { vault, googleToken, userInfo, setGoogleToken, ensureValidToken, updateSharedUserRole, addSharedSource } = useVaultStore();
+  const {
+    vault, googleToken, setGoogleToken, ensureValidToken, updateSharedUserRole,
+    syncToCloud, driveFileId, addVaultPasswordSlot,
+  } = useVaultStore();
   const [step, setStep] = useState<"form" | "sharing" | "done" | "error">("form");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<VaultPermission>("reader");
@@ -45,18 +48,10 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
 
   const isVault = type === "vault";
   const isGroup = type === "group";
-  const groupTarget = isGroup ? (target as PasswordGroup) : null;
   const title = isVault ? "Cofre completo" : target?.name ?? "Compartilhamento";
 
-  const entriesToShare = isVault
-    ? vault.entries
-    : isGroup
-    ? vault.entries.filter((e) => e.groupId === target!.id)
-    : [target as PasswordEntry];
-  const groupsToShare = isVault ? vault.groups : groupTarget ? [groupTarget] : [];
-
   async function handleShare() {
-    if (!email.trim() || !sharePassword || !googleToken) return;
+    if (!email.trim() || !sharePassword) return;
     setStep("sharing");
 
     try {
@@ -67,49 +62,27 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
         token = await startOAuthFlow(true);
         setGoogleToken(token);
       }
+
+      let fileId = driveFileId;
+      if (!fileId) {
+        await syncToCloud();
+        fileId = useVaultStore.getState().driveFileId;
+      }
+      if (!fileId) throw new Error("Não foi possível criar o arquivo principal no Google Drive.");
+
       const collaborator = email.trim().toLowerCase();
-      const sharedVault: VaultData = {
-        version: vault!.version,
-        owner: vault!.owner || userInfo?.email || "owner",
-        collaboration: {
-          documentId: crypto.randomUUID(),
-          type,
-          title,
-          createdFromId: target?.id,
-          createdAt: new Date().toISOString(),
-        },
-        sharedWith: [{ email: collaborator, role, addedAt: new Date().toISOString() }],
-        deletionRequests: [],
-        groups: groupsToShare,
-        entries: entriesToShare,
-      };
-
-      const encrypted = await encryptData(JSON.stringify(sharedVault), sharePassword);
-      const safeName = title
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9]+/gi, "-")
-        .replace(/^-|-$/g, "")
-        .toLowerCase();
-      const fileName = `pk-collab-${safeName || "cofre"}-${Date.now()}.keep`;
-      const fileId = await createSharedVaultFile(token, encrypted, fileName);
-
-      // Share the Drive file with the recipient — role mapping to Drive roles
       const driveRole = role === "reader" ? "reader" : "writer";
       await shareFile(
         token,
         fileId,
         collaborator,
         driveRole,
-        `Voce recebeu um compartilhamento do Password Keeper: ${title}. Abra pelo app em "Abrir compartilhamento".`
+        `Voce recebeu acesso ao Password Keeper: ${title}. Abra o mesmo cofre pelo app usando Google Drive.`
       );
 
-      const revision = await getFileVersion(token, fileId);
-      addSharedSource(fileId, sharedVault, sharePassword, revision);
-
-      // Record the shared user in the vault metadata
-      updateSharedUserRole(collaborator, role);
-
+      updateSharedUserRole(collaborator, role, type, target?.id, title);
+      await addVaultPasswordSlot(`share:${collaborator}:${type}:${target?.id ?? "vault"}`, sharePassword);
+      await syncToCloud();
       setStep("done");
     } catch (err) {
       setErrorMsg(String(err));
@@ -119,13 +92,13 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
 
   function generateSharePassword() {
     const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    const arr = new Uint8Array(16);
+    const arr = new Uint8Array(18);
     crypto.getRandomValues(arr);
     setSharePassword(Array.from(arr, (x) => chars[x % chars.length]).join(""));
   }
 
-  function copyPassword() {
-    navigator.clipboard.writeText(sharePassword);
+  async function copyPassword() {
+    await copyToClipboard(sharePassword, { clearAfterMs: 30000, showNotification: false });
     setCopiedPwd(true);
     setTimeout(() => setCopiedPwd(false), 2000);
   }
@@ -135,7 +108,6 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
       <div className="bg-vault-card border border-vault-border rounded-2xl w-full max-w-md mx-4 shadow-2xl animate-slide-up">
-        {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-vault-border">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-vault-primary/20 flex items-center justify-center">
@@ -160,12 +132,11 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 <div className="p-3 bg-vault-warning/10 border border-vault-warning/30 rounded-xl flex items-start gap-2">
                   <AlertCircle size={16} className="text-vault-warning mt-0.5 flex-shrink-0" />
                   <p className="text-sm text-vault-warning">
-                    Conecte ao Google Drive primeiro para compartilhar.
+                    Conecte ao Google Drive primeiro para compartilhar o arquivo principal.
                   </p>
                 </div>
               )}
 
-              {/* Email */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
                   <Mail size={13} className="inline mr-1" />
@@ -180,7 +151,6 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 />
               </div>
 
-              {/* Permission role */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-2">
                   Nível de acesso
@@ -211,7 +181,6 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 </div>
               </div>
 
-              {/* Share password */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
                   <Lock size={13} className="inline mr-1" />
@@ -222,7 +191,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                     type="text"
                     value={sharePassword}
                     onChange={(e) => setSharePassword(e.target.value)}
-                    placeholder="Senha para descriptografar"
+                    placeholder="Senha para abrir este cofre"
                     className="w-full bg-vault-input border border-vault-border rounded-xl px-4 py-2.5 pr-20 text-vault-text font-mono text-sm placeholder-vault-textMuted focus:outline-none focus:border-vault-primary transition-colors"
                   />
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
@@ -234,15 +203,19 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                       Gerar
                     </button>
                     {sharePassword && (
-                      <button type="button" onClick={copyPassword} className="p-1.5 text-vault-textMuted hover:text-vault-text transition-colors">
+                      <button type="button" onClick={copyPassword} title="Copiar senha de compartilhamento" className="p-1.5 text-vault-textMuted hover:text-vault-text transition-colors">
                         {copiedPwd ? <Check size={14} className="text-vault-success" /> : <Copy size={14} />}
                       </button>
                     )}
                   </div>
                 </div>
                 <p className="text-xs text-vault-textMuted mt-1">
-                  Envie esta senha ao destinatário por outro canal (WhatsApp, SMS, etc)
+                  Envie esta senha ao destinatário por outro canal. Não envie sua senha mestra.
                 </p>
+              </div>
+
+              <div className="p-3 bg-vault-sidebar border border-vault-border rounded-xl text-xs text-vault-textMuted leading-relaxed">
+                O acesso será aplicado ao arquivo principal do cofre no Google Drive. O destinatário abre esse mesmo cofre usando esta senha de compartilhamento e vê apenas o escopo permitido.
               </div>
 
               <div className="flex gap-3 pt-2">
@@ -264,7 +237,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
             <div className="text-center py-8">
               <div className="w-12 h-12 rounded-full border-2 border-vault-primary border-t-transparent animate-spin mx-auto mb-4" />
               <p className="text-vault-text font-medium">Compartilhando...</p>
-              <p className="text-vault-textMuted text-sm mt-1">Criando arquivo no Google Drive</p>
+              <p className="text-vault-textMuted text-sm mt-1">Atualizando permissões e senha de compartilhamento</p>
             </div>
           )}
 
@@ -276,7 +249,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
               <div>
                 <h3 className="text-vault-text font-semibold text-lg">Compartilhado!</h3>
                 <p className="text-vault-textMuted text-sm mt-1">
-                  Convite enviado para <strong className="text-vault-text">{email}</strong> como{" "}
+                  <strong className="text-vault-text">{email}</strong> recebeu acesso como{" "}
                   <strong className="text-vault-primary">{selectedRoleOption.label}</strong>.
                 </p>
               </div>
@@ -309,14 +282,12 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 <h3 className="text-vault-text font-semibold">Erro ao compartilhar</h3>
                 <p className="text-vault-textMuted text-sm mt-1">{errorMsg}</p>
               </div>
-              <div className="flex gap-3">
-                <button onClick={() => setStep("form")} className="flex-1 py-2.5 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textSecondary hover:text-vault-text transition-colors font-medium">
-                  Tentar novamente
-                </button>
-                <button onClick={onClose} className="flex-1 py-2.5 bg-vault-danger/20 border border-vault-danger/40 rounded-xl text-vault-danger font-medium transition-colors">
-                  Fechar
-                </button>
-              </div>
+              <button
+                onClick={() => setStep("form")}
+                className="w-full py-2.5 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textSecondary hover:text-vault-text transition-colors"
+              >
+                Tentar novamente
+              </button>
             </div>
           )}
         </div>

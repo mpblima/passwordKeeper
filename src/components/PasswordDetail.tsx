@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Copy, Check, Eye, EyeOff, Edit, Trash2, Star, ExternalLink, Share2, Calendar, Flag } from "lucide-react";
+import { Copy, Check, Eye, EyeOff, Edit, Trash2, Star, ExternalLink, Share2, Calendar, Flag, AlertCircle } from "lucide-react";
 import { IconDisplay } from "./IconDisplay";
 import { Tooltip } from "./Tooltip";
 import { useVaultStore } from "../store/vaultStore";
 import { PasswordForm } from "./PasswordForm";
 import { ShareModal } from "./ShareModal";
 import { measurePasswordStrength } from "../services/crypto";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface CopyButtonProps {
   text: string;
@@ -14,18 +15,34 @@ interface CopyButtonProps {
 
 function CopyButton({ text, label }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
-  function handleCopy() {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCopy() {
+    try {
+      await copyToClipboard(text, {
+        clearAfterMs: label === "senha" ? 30000 : 60000, // 30s for passwords, 60s for others
+        showNotification: false // We handle UI feedback ourselves
+      });
+      setCopied(true);
+      setError(null);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      setError(String(err));
+      setTimeout(() => setError(null), 3000);
+    }
   }
+
   return (
     <button
       onClick={handleCopy}
       title={`Copiar ${label ?? ""}`}
       className="p-1.5 rounded-lg text-vault-textMuted hover:text-vault-primary hover:bg-vault-primary/10 transition-all"
     >
-      {copied ? <Check size={15} className="text-vault-success" /> : <Copy size={15} />}
+      {error ? (
+        <span title={error}><AlertCircle size={15} className="text-vault-danger" /></span>
+      ) : (
+        copied ? <Check size={15} className="text-vault-success" /> : <Copy size={15} />
+      )}
     </button>
   );
 }
@@ -47,7 +64,7 @@ export function PasswordDetail() {
     ? sharedSource.groups.find((g) => g.id === entry.groupId)
     : vault?.groups.find((g) => g.id === entry.groupId);
   const strength = measurePasswordStrength(entry.password);
-  const role = sharedSource?.role ?? currentUserRole();
+  const role = sharedSource?.role ?? currentUserRole("entry", entry.id);
   const isOwner = role === "owner";
   const canEdit = role === "owner" || role === "editor";
 

@@ -389,8 +389,8 @@ export function MasterPasswordScreen() {
                 onClick={() => { reset(); handleConnectDrive(); }} />
               <OptionButton icon={<Share2 size={20} className="text-vault-primary" />} iconBg="bg-vault-primary/20"
                 title="Abrir compartilhamento"
-                subtitle="Colaborar em senha ou grupo compartilhado"
-                onClick={() => { reset(); handleConnectForImport(); }} />
+                subtitle="Abrir o arquivo principal compartilhado no Drive"
+                onClick={() => { reset(); handleConnectDrive(); }} />
             </div>
           )}
 

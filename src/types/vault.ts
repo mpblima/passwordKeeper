@@ -3,6 +3,9 @@ export type VaultPermission = "owner" | "editor" | "reader";
 export interface SharedUser {
   email: string;
   role: VaultPermission;
+  scopeType?: SharedScopeType;
+  scopeId?: string;
+  scopeTitle?: string;
   addedAt: string;
 }
 

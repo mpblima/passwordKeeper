@@ -1,5 +1,31 @@
 // AES-256-GCM encryption using Web Crypto API
-// Layout: [16 bytes salt][12 bytes iv][encrypted data]
+// Legacy layout: [16 bytes salt][12 bytes iv][encrypted data]
+// Envelope layout: JSON with an encrypted payload and one or more password key slots.
+
+export interface VaultKeySlot {
+  id: string;
+  salt: string;
+  iv: string;
+  encryptedKey: string;
+  createdAt: string;
+}
+
+interface VaultEnvelope {
+  format: "password-keeper-envelope";
+  version: 2;
+  payload: {
+    iv: string;
+    data: string;
+  };
+  keySlots: VaultKeySlot[];
+}
+
+export interface DecryptedVaultEnvelope {
+  plaintext: string;
+  dataKey: string | null;
+  keySlots: VaultKeySlot[];
+  slotId?: string;
+}
 
 function bufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -37,12 +63,125 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
+async function importDataKey(dataKeyBase64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    base64ToBuffer(dataKeyBase64) as unknown as BufferSource,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+export function createVaultDataKey(): string {
+  return bufferToBase64(crypto.getRandomValues(new Uint8Array(32)).buffer);
+}
+
+export async function createVaultKeySlot(id: string, password: string, dataKeyBase64: string): Promise<VaultKeySlot> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const passwordKey = await deriveKey(password, salt);
+  const encryptedKey = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv as unknown as BufferSource },
+    passwordKey,
+    base64ToBuffer(dataKeyBase64) as unknown as BufferSource
+  );
+
+  return {
+    id,
+    salt: bufferToBase64(salt.buffer),
+    iv: bufferToBase64(iv.buffer),
+    encryptedKey: bufferToBase64(encryptedKey),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function decryptVaultKeySlot(slot: VaultKeySlot, password: string): Promise<string> {
+  const passwordKey = await deriveKey(password, base64ToBuffer(slot.salt));
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBuffer(slot.iv) as unknown as BufferSource },
+    passwordKey,
+    base64ToBuffer(slot.encryptedKey) as unknown as BufferSource
+  );
+  return bufferToBase64(decrypted);
+}
+
+export async function encryptVaultEnvelope(
+  plaintext: string,
+  dataKeyBase64: string,
+  keySlots: VaultKeySlot[]
+): Promise<string> {
+  if (keySlots.length === 0) throw new Error("Nenhuma senha autorizada para criptografar o cofre");
+  const key = await importDataKey(dataKeyBase64);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(plaintext);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, encoded);
+
+  const envelope: VaultEnvelope = {
+    format: "password-keeper-envelope",
+    version: 2,
+    payload: {
+      iv: bufferToBase64(iv.buffer),
+      data: bufferToBase64(encrypted),
+    },
+    keySlots,
+  };
+
+  return JSON.stringify(envelope);
+}
+
+function parseVaultEnvelope(content: string): VaultEnvelope | null {
+  try {
+    const parsed = JSON.parse(content) as Partial<VaultEnvelope>;
+    if (parsed.format === "password-keeper-envelope" && parsed.version === 2 && parsed.payload && Array.isArray(parsed.keySlots)) {
+      return parsed as VaultEnvelope;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function decryptVaultEnvelope(content: string, password: string): Promise<DecryptedVaultEnvelope> {
+  const envelope = parseVaultEnvelope(content);
+  if (!envelope) {
+    return {
+      plaintext: await decryptData(content, password),
+      dataKey: null,
+      keySlots: [],
+    };
+  }
+
+  let lastError: unknown;
+  for (const slot of envelope.keySlots) {
+    try {
+      const dataKey = await decryptVaultKeySlot(slot, password);
+      const key = await importDataKey(dataKey);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: base64ToBuffer(envelope.payload.iv) as unknown as BufferSource },
+        key,
+        base64ToBuffer(envelope.payload.data) as unknown as BufferSource
+      );
+      return {
+        plaintext: new TextDecoder().decode(decrypted),
+        dataKey,
+        keySlots: envelope.keySlots,
+        slotId: slot.id,
+      };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError ?? new Error("Senha incorreta");
+}
+
 export async function encryptData(plaintext: string, password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveKey(password, salt);
   const encoded = new TextEncoder().encode(plaintext);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, encoded);
 
   const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
   combined.set(salt, 0);
@@ -59,7 +198,7 @@ export async function decryptData(encryptedBase64: string, password: string): Pr
   const data = combined.slice(28);
   const key = await deriveKey(password, salt);
 
-  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, data);
   return new TextDecoder().decode(decrypted);
 }
 

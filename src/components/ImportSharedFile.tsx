@@ -1,31 +1,17 @@
 import { useEffect, useState } from "react";
-import { X, Share2, Lock, Check, AlertCircle, Eye, EyeOff, Loader2, RefreshCw, ArrowRight } from "lucide-react";
+import { X, Share2, Lock, Check, AlertCircle, Eye, EyeOff, Loader2, RefreshCw, ArrowRight, FileKey } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
-import { findAllCollaborativeVaultFiles, downloadVaultFile, getFileVersion } from "../services/googleDrive";
-import { decryptData } from "../services/crypto";
-import { VaultData } from "../types/vault";
+import { findAllVaultFiles, downloadVaultFile, getFileVersion } from "../services/googleDrive";
 
 interface ImportSharedFileProps {
   onClose: () => void;
 }
 
-function formatShareFileName(name: string): string {
-  return name
-    .replace(/^pk-collab-/, "")
-    .replace(/-\d+\.keep$/, "")
-    .replace(/\.keep$/, "")
-    .split("-")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
 export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
   const {
-    googleToken, userInfo, ensureValidToken, addSharedSource,
-    dismissedShareFileIds, dismissShareFile,
+    googleToken, userInfo, ensureValidToken, unlockVault, setDriveFileId, setDriveRevision,
   } = useVaultStore();
-  const [files, setFiles] = useState<{ id: string; name: string; ownerEmail?: string }[]>([]);
+  const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -38,8 +24,7 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
     setErrorMsg("");
     try {
       const token = await ensureValidToken();
-      const result = (await findAllCollaborativeVaultFiles(token))
-        .filter((file) => !dismissedShareFileIds.includes(file.id));
+      const result = await findAllVaultFiles(token);
       setFiles(result);
       setStep("pick");
     } catch (err) {
@@ -56,14 +41,14 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
     try {
       const token = await ensureValidToken();
       const encrypted = await downloadVaultFile(token, selectedFileId);
-      const decrypted = await decryptData(encrypted, password);
-      const sharedVault = JSON.parse(decrypted) as VaultData;
+      await unlockVault(encrypted, password);
       const revision = await getFileVersion(token, selectedFileId);
-      addSharedSource(selectedFileId, sharedVault, password, revision);
+      setDriveFileId(selectedFileId);
+      setDriveRevision(revision);
       setStep("done");
       setTimeout(onClose, 800);
     } catch {
-      setErrorMsg("Senha incorreta ou compartilhamento invalido.");
+      setErrorMsg("Senha incorreta ou cofre inválido.");
       setStep("error");
     }
   }
@@ -84,7 +69,7 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
             </div>
             <div>
               <h2 className="text-vault-text font-semibold">Abrir compartilhamento</h2>
-              <p className="text-vault-textMuted text-sm">Colaborar em um cofre do Drive</p>
+              <p className="text-vault-textMuted text-sm">Abrir o arquivo principal compartilhado no Drive</p>
             </div>
           </div>
           <button onClick={onClose} className="text-vault-textMuted hover:text-vault-text transition-colors">
@@ -102,20 +87,8 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
                 className="w-full py-2.5 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textSecondary hover:text-vault-text text-sm transition-colors flex items-center justify-center gap-2"
               >
                 {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-                Atualizar compartilhamentos
+                Atualizar cofres do Drive
               </button>
-              {files.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    files.forEach((file) => dismissShareFile(file.id));
-                    setFiles([]);
-                  }}
-                  className="w-full py-2 bg-vault-sidebar border border-vault-border rounded-xl text-vault-textMuted hover:text-vault-danger text-xs transition-colors"
-                >
-                  Ocultar todos os convites desta lista
-                </button>
-              )}
 
               {loading ? (
                 <div className="text-center py-8 text-vault-textMuted text-sm">
@@ -125,39 +98,23 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
               ) : files.length === 0 ? (
                 <div className="p-4 bg-vault-sidebar border border-vault-border rounded-xl text-center">
                   <Share2 size={32} className="text-vault-textMuted mx-auto mb-2" />
-                  <p className="text-vault-textSecondary text-sm font-medium">Nenhum compartilhamento encontrado</p>
+                  <p className="text-vault-textSecondary text-sm font-medium">Nenhum cofre encontrado</p>
                   <p className="text-vault-textMuted text-xs mt-1">
-                    O convite aparece aqui depois que o proprietario compartilhar com seu email Google.
+                    O cofre aparece aqui depois que o proprietário compartilhar o arquivo principal com seu email Google.
                   </p>
                 </div>
               ) : (
                 <div className="space-y-2">
                   {files.map((file) => (
-                    <div
+                    <button
                       key={file.id}
+                      onClick={() => { setSelectedFileId(file.id); setStep("password"); }}
                       className="w-full flex items-center gap-3 p-3 bg-vault-sidebar border border-vault-border hover:border-vault-primary/40 rounded-xl transition-colors text-left"
                     >
-                      <Share2 size={16} className="text-vault-primary" />
-                      <button
-                        onClick={() => { setSelectedFileId(file.id); setStep("password"); }}
-                        className="flex-1 min-w-0 text-left"
-                      >
-                        <p className="text-vault-textSecondary text-sm truncate">{formatShareFileName(file.name)}</p>
-                        <p className="text-vault-textMuted text-xs">
-                          {file.ownerEmail ? `Compartilhado por ${file.ownerEmail}` : "Convite de colaboração"}
-                        </p>
-                      </button>
-                      <button
-                        onClick={() => {
-                          dismissShareFile(file.id);
-                          setFiles((current) => current.filter((item) => item.id !== file.id));
-                        }}
-                        className="px-2 py-1 rounded-lg text-xs text-vault-textMuted hover:text-vault-danger hover:bg-vault-danger/10"
-                      >
-                        Ocultar
-                      </button>
+                      <FileKey size={16} className="text-vault-primary" />
+                      <span className="flex-1 min-w-0 text-vault-textSecondary text-sm truncate">{file.name}</span>
                       <ArrowRight size={14} className="text-vault-textMuted" />
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -173,20 +130,20 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
               <div className="flex items-center gap-2 p-3 bg-vault-success/10 border border-vault-success/20 rounded-xl">
                 <Check size={15} className="text-vault-success flex-shrink-0" />
                 <p className="text-sm text-vault-success truncate">
-                  {selectedFile ? formatShareFileName(selectedFile.name) : "Compartilhamento"}
+                  {selectedFile?.name ?? "Cofre compartilhado"}
                 </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
                   <Lock size={13} className="inline mr-1" />
-                  Senha do compartilhamento
+                  Senha mestra ou de compartilhamento
                 </label>
                 <div className="relative">
                   <input
                     type={showPwd ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Senha enviada pelo proprietario"
+                    placeholder="Senha mestra ou de compartilhamento"
                     required
                     autoFocus
                     className="w-full bg-vault-input border border-vault-border rounded-xl px-4 py-2.5 pr-11 text-vault-text placeholder-vault-textMuted focus:outline-none focus:border-vault-primary transition-colors"
@@ -210,15 +167,15 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
           {step === "opening" && (
             <div className="text-center py-10">
               <div className="w-12 h-12 rounded-full border-2 border-vault-primary border-t-transparent animate-spin mx-auto mb-4" />
-              <p className="text-vault-text font-medium">Abrindo compartilhamento...</p>
-              <p className="text-vault-textMuted text-sm mt-1">Sincronizacao colaborativa sera ativada automaticamente</p>
+              <p className="text-vault-text font-medium">Abrindo cofre compartilhado...</p>
+              <p className="text-vault-textMuted text-sm mt-1">As permissões serão aplicadas automaticamente</p>
             </div>
           )}
 
           {step === "done" && (
             <div className="text-center py-6 space-y-3">
               <Check size={36} className="text-vault-success mx-auto" />
-              <p className="text-vault-text font-semibold">Compartilhamento aberto</p>
+              <p className="text-vault-text font-semibold">Cofre aberto</p>
             </div>
           )}
 
@@ -226,7 +183,7 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
             <div className="text-center py-6 space-y-4">
               <AlertCircle size={36} className="text-vault-danger mx-auto" />
               <div>
-                <h3 className="text-vault-text font-semibold">Nao foi possivel abrir</h3>
+                <h3 className="text-vault-text font-semibold">Não foi possível abrir</h3>
                 <p className="text-vault-textMuted text-sm mt-1">{errorMsg}</p>
               </div>
               <div className="flex gap-3">

@@ -25,7 +25,7 @@ export function Sidebar({ onAddEntry, onForceSync, isForceSyncing }: SidebarProp
     isSyncing, isDirty, localVaultPath, sidebarOpen, sharedSources,
     syncError, clearSyncError,
     setActiveView, selectGroup, setSearchQuery, lockVault,
-    saveToLocalFile, updateEntry, removeSharedSource,
+    saveToLocalFile, updateEntry, removeSharedSource, canViewGroup, canViewEntry, canEditGroup,
   } = useVaultStore();
   const receivedSharedSources = sharedSources.filter((source) => source.role !== "owner");
 
@@ -53,8 +53,8 @@ export function Sidebar({ onAddEntry, onForceSync, isForceSyncing }: SidebarProp
     if (entryId) updateEntry(entryId, { groupId: groupId ?? undefined });
   }
 
-  const visibleVaultEntries = vault?.entries ?? [];
-  const visibleVaultGroups = vault?.groups ?? [];
+  const visibleVaultEntries = vault?.entries.filter((entry) => canViewEntry(entry)) ?? [];
+  const visibleVaultGroups = vault?.groups.filter((group) => canViewGroup(group.id)) ?? [];
   const totalEntries = visibleVaultEntries.length + receivedSharedSources.flatMap((source) => source.entries).length;
   const favoriteCount = visibleVaultEntries.filter((e) => e.favorite).length
     + receivedSharedSources.flatMap((source) => source.entries).filter((entry) => entry.favorite).length;
@@ -164,7 +164,8 @@ export function Sidebar({ onAddEntry, onForceSync, isForceSyncing }: SidebarProp
               </span>
               <button
                 onClick={() => setShowGroupForm(true)}
-                className="p-1 rounded-lg text-vault-textMuted hover:text-vault-primary hover:bg-vault-primary/10 transition-colors"
+                disabled={role === "reader"}
+                className="p-1 rounded-lg text-vault-textMuted hover:text-vault-primary hover:bg-vault-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Novo grupo"
               >
                 <Plus size={14} />
@@ -184,10 +185,10 @@ export function Sidebar({ onAddEntry, onForceSync, isForceSyncing }: SidebarProp
                 count={getGroupEntryCount(group.id)}
                 active={activeView === "group" && selectedGroupId === group.id}
                 onClick={() => selectGroup(group.id)}
-                onEdit={() => { setEditingGroup(group); setShowGroupForm(true); }}
-                onShare={() => setShareGroup(group)}
-                onDelete={() => setConfirmDeleteGroup(group.id)}
-                onAddEntry={() => onAddEntry(group.id)}
+                onEdit={canEditGroup(group.id) ? () => { setEditingGroup(group); setShowGroupForm(true); } : undefined}
+                onShare={isOwner ? () => setShareGroup(group) : undefined}
+                onDelete={isOwner ? () => setConfirmDeleteGroup(group.id) : undefined}
+                onAddEntry={canEditGroup(group.id) ? () => onAddEntry(group.id) : undefined}
                 onDrop={(e) => handleDropOnGroup(e, group.id)}
               />
             ))}

@@ -107,7 +107,7 @@ export function AppMenuBar({ onForceSync, isForceSyncing }: AppMenuBarProps) {
               onClick={() => { close(); onForceSync?.(); }}
             />
             <MenuItem icon={<RefreshCw size={14} />} label="Backup & Sincronização..." onClick={() => { close(); setShowBackup(true); }} />
-            <MenuItem icon={<Key size={14} />} label="Trocar senha do cofre..." onClick={() => { close(); setShowChangePassword(true); }} />
+            {isOwner && <MenuItem icon={<Key size={14} />} label="Trocar senha do cofre..." onClick={() => { close(); setShowChangePassword(true); }} />}
           </Dropdown>
         )}
 

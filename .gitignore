@@ -19,3 +19,4 @@ vault-config.json
 client_secret*.json
 *.jks
 *.keystore
+.aider*

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useVaultStore } from "./store/vaultStore";
 import { MasterPasswordScreen } from "./components/MasterPasswordScreen";
 import { Sidebar } from "./components/Sidebar";
@@ -15,10 +15,12 @@ export function App() {
     googleToken, localVaultPath, driveFileId,
     syncToCloud, saveToLocalFile, initFromStorage, refreshFromCloudIfChanged,
     refreshSharedSources, forceSync, clearSyncError,
+    lockVault
   } = useVaultStore();
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [addEntryGroupId, setAddEntryGroupId] = useState<string | undefined>();
   const [autoSyncTimer, setAutoSyncTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sharedNotice, setSharedNotice] = useState("");
   const [isForceSyncing, setIsForceSyncing] = useState(false);
 
@@ -59,15 +61,43 @@ export function App() {
     if (isLocked || !googleToken) return;
     const timer = setInterval(() => {
       refreshSharedSources()
-        .then((changed) => {
-          if (!changed) return;
-          setSharedNotice("Compartilhamento atualizado");
+        .then((notice) => {
+          if (!notice) return;
+          setSharedNotice(notice);
           setTimeout(() => setSharedNotice(""), 3000);
         })
         .catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
   }, [isLocked, googleToken, refreshSharedSources]);
+
+  // Auto-lock vault after 5 minutes of inactivity
+  useEffect(() => {
+    if (isLocked) return;
+
+    const handleUserActivity = () => {
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = setTimeout(() => {
+        lockVault();
+      }, 5 * 60 * 1000); // 5 minutes
+    };
+
+    // Set up event listeners for user activity
+    ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+      window.addEventListener(event, handleUserActivity);
+    });
+
+    // Initialize the timer
+    handleUserActivity();
+
+    return () => {
+      ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+        window.removeEventListener(event, handleUserActivity);
+      });
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    };
+  }, [isLocked, lockVault]);
 
   async function handleForceSync() {
     setIsForceSyncing(true);

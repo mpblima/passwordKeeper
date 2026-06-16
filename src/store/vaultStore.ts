@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { VaultData, PasswordEntry, PasswordGroup, GoogleToken, ViewMode, ActiveView, VaultPermission, DeletionRequest, SharedSource } from "../types/vault";
-import { encryptData, decryptData } from "../services/crypto";
+import { VaultData, PasswordEntry, PasswordGroup, GoogleToken, ViewMode, ActiveView, VaultPermission, DeletionRequest, SharedSource, SharedScopeType, SharedUser } from "../types/vault";
+import { encryptData, decryptData, decryptVaultEnvelope, encryptVaultEnvelope, createVaultDataKey, createVaultKeySlot, VaultKeySlot } from "../services/crypto";
 import {
   findVaultFile,
   downloadVaultFile,
@@ -72,6 +72,8 @@ interface VaultStore {
   // ── Auth / Lock state ──────────────────────────────────────────────────────
   isLocked: boolean;
   masterPassword: string;
+  vaultDataKey: string | null;
+  vaultKeySlots: VaultKeySlot[];
 
   // ── Google Drive ───────────────────────────────────────────────────────────
   googleToken: GoogleToken | null;
@@ -105,7 +107,11 @@ interface VaultStore {
   setDriveRevision: (revision: string | null) => void;
 
   // ── Role ───────────────────────────────────────────────────────────────────
-  currentUserRole: () => VaultPermission;
+  currentUserRole: (scopeType?: SharedScopeType, scopeId?: string) => VaultPermission;
+  canViewGroup: (groupId: string) => boolean;
+  canEditGroup: (groupId: string) => boolean;
+  canViewEntry: (entry: PasswordEntry) => boolean;
+  canEditEntry: (entry: PasswordEntry) => boolean;
 
   // ── Storage init ───────────────────────────────────────────────────────────
   initFromStorage: () => Promise<void>;
@@ -116,10 +122,11 @@ interface VaultStore {
   lockVault: () => void;
   closeVault: () => void;
   getEncryptedVault: () => Promise<string>;
+  addVaultPasswordSlot: (id: string, password: string) => Promise<void>;
   mergeSharedEntries: (entries: PasswordEntry[], group?: PasswordGroup | null) => void;
   mergeFromVault: (otherVault: VaultData) => number;
   addSharedSource: (fileId: string, sharedVault: VaultData, password: string, revision: string | null) => void;
-  refreshSharedSources: () => Promise<boolean>;
+  refreshSharedSources: () => Promise<string | false>;
   syncSharedSource: (sourceId: string) => Promise<void>;
   syncOwnedSharedSourcesFromVault: () => void;
   removeSharedSource: (sourceId: string, cancelForEveryone?: boolean) => Promise<void>;
@@ -154,8 +161,8 @@ interface VaultStore {
   rejectDeletion: (requestId: string) => void;
 
   // ── Sharing / permissions ──────────────────────────────────────────────────
-  updateSharedUserRole: (email: string, role: VaultPermission) => void;
-  removeSharedUser: (email: string) => void;
+  updateSharedUserRole: (email: string, role: VaultPermission, scopeType?: SharedScopeType, scopeId?: string, scopeTitle?: string) => void;
+  removeSharedUser: (email: string, scopeType?: SharedScopeType, scopeId?: string) => void;
 
   // ── UI ─────────────────────────────────────────────────────────────────────
   selectGroup: (id: string | null) => void;
@@ -176,6 +183,8 @@ interface VaultStore {
 export const useVaultStore = create<VaultStore>((set, get) => ({
   isLocked: true,
   masterPassword: "",
+  vaultDataKey: null,
+  vaultKeySlots: [],
   googleToken: loadPersisted<GoogleToken>("pk_google_token"),
   driveFileId: loadPersisted<string>("pk_drive_file_id"),
   driveRevision: loadPersisted<string>("pk_drive_revision"),
@@ -238,13 +247,74 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     }));
   },
 
-  currentUserRole: (): VaultPermission => {
+  currentUserRole: (scopeType, scopeId): VaultPermission => {
     const { vault, userInfo } = get();
     if (!vault) return "owner";
     if (!userInfo) return vault.collaboration ? "reader" : "owner";
     if (!vault.owner || vault.owner === userInfo.email) return "owner";
-    const shared = vault.sharedWith?.find((u) => u.email === userInfo.email);
-    return shared?.role ?? "reader";
+
+    const rank: Record<VaultPermission, number> = { reader: 1, editor: 2, owner: 3 };
+    const best = (users: SharedUser[]) => users.reduce<VaultPermission | null>((acc, user) => {
+      if (!acc || rank[user.role] > rank[acc]) return user.role;
+      return acc;
+    }, null);
+
+    const shares = (vault.sharedWith ?? []).filter((u) => u.email === userInfo.email);
+    if (!scopeType) return best(shares) ?? "reader";
+
+    const matches = shares.filter((share) => {
+      const shareScope = share.scopeType ?? "vault";
+      if (shareScope === "vault") return true;
+      if (shareScope === scopeType && share.scopeId === scopeId) return true;
+      if (shareScope === "group" && scopeType === "entry") {
+        const entry = vault.entries.find((item) => item.id === scopeId);
+        return !!entry?.groupId && entry.groupId === share.scopeId;
+      }
+      return false;
+    });
+
+    return best(matches) ?? "reader";
+  },
+
+  canViewGroup: (groupId) => {
+    const role = get().currentUserRole("group", groupId);
+    if (role !== "reader") return true;
+    const { vault, userInfo } = get();
+    if (!vault || !userInfo || vault.owner === userInfo.email || !vault.owner) return true;
+    return (vault.sharedWith ?? []).some((share) => {
+      if (share.email !== userInfo.email) return false;
+      const scope = share.scopeType ?? "vault";
+      if (scope === "vault" || (scope === "group" && share.scopeId === groupId)) return true;
+      if (scope === "entry") {
+        const entry = vault.entries.find((item) => item.id === share.scopeId);
+        return entry?.groupId === groupId;
+      }
+      return false;
+    });
+  },
+
+  canEditGroup: (groupId) => {
+    const role = get().currentUserRole("group", groupId);
+    return role === "owner" || role === "editor";
+  },
+
+  canViewEntry: (entry) => {
+    const role = get().currentUserRole("entry", entry.id);
+    if (role !== "reader") return true;
+    const { vault, userInfo } = get();
+    if (!vault || !userInfo || vault.owner === userInfo.email || !vault.owner) return true;
+    return (vault.sharedWith ?? []).some((share) => {
+      if (share.email !== userInfo.email) return false;
+      const scope = share.scopeType ?? "vault";
+      return scope === "vault" ||
+        (scope === "entry" && share.scopeId === entry.id) ||
+        (scope === "group" && !!entry.groupId && share.scopeId === entry.groupId);
+    });
+  },
+
+  canEditEntry: (entry) => {
+    const role = get().currentUserRole("entry", entry.id);
+    return role === "owner" || role === "editor";
   },
 
   createVault: (masterPassword) => {
@@ -256,12 +326,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       groups: [],
       entries: [],
     };
-    set({ vault, masterPassword, isLocked: false, isDirty: true });
+    set({ vault, masterPassword, vaultDataKey: null, vaultKeySlots: [], isLocked: false, isDirty: true });
   },
 
   unlockVault: async (encryptedData, masterPassword) => {
-    const json = await decryptData(encryptedData, masterPassword);
-    const raw = JSON.parse(json);
+    const opened = await decryptVaultEnvelope(encryptedData, masterPassword);
+    const raw = JSON.parse(opened.plaintext);
     // Migrate older vaults that lack new fields
     const vault: VaultData = {
       sharedWith: [],
@@ -269,11 +339,18 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       owner: "",
       ...raw,
     };
-    set({ vault, masterPassword, isLocked: false, sharedSources: [] });
+    set({
+      vault,
+      masterPassword,
+      vaultDataKey: opened.dataKey,
+      vaultKeySlots: opened.keySlots,
+      isLocked: false,
+      sharedSources: [],
+    });
   },
 
   lockVault: () => {
-    set({ isLocked: true, masterPassword: "", vault: null, sharedSources: [], selectedEntryId: null });
+    set({ isLocked: true, masterPassword: "", vaultDataKey: null, vaultKeySlots: [], vault: null, sharedSources: [], selectedEntryId: null });
   },
 
   closeVault: () => {
@@ -286,6 +363,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       isLocked: true,
       masterPassword: "",
       vault: null,
+      vaultDataKey: null,
+      vaultKeySlots: [],
       sharedSources: [],
       selectedEntryId: null,
       selectedGroupId: null,
@@ -473,18 +552,32 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   refreshSharedSources: async () => {
-    const { sharedSources } = get();
+    const { sharedSources, isDirty, vault } = get();
     if (sharedSources.length === 0) return false;
     const token = await get().ensureValidToken();
-    let changed = false;
     for (const source of sharedSources) {
       try {
         const revision = await getFileVersion(token, source.fileId);
         if (!revision || revision === source.revision) continue;
         const encrypted = await downloadVaultFile(token, source.fileId);
         const json = await decryptData(encrypted, source.password);
-        get().addSharedSource(source.fileId, JSON.parse(json) as VaultData, source.password, revision);
-        changed = true;
+
+        // Check for potential conflicts: if vault is dirty, we might be overwriting local changes
+        const hasLocalChanges = isDirty && !!vault;
+        const remoteData = JSON.parse(json) as VaultData;
+
+        get().addSharedSource(source.fileId, remoteData, source.password, revision);
+
+        // Return a notice string indicating who updated the shared source
+        const displayName = source.updatedBy || source.owner;
+        let notice = `Compartilhamento atualizado por ${displayName}`;
+
+        // If there were local changes, add a warning about potential overwrite
+        if (hasLocalChanges) {
+          notice += ` (alterações locais podem ter sido sobrescritas)`;
+        }
+
+        return notice;
       } catch (err) {
         if (!isRevokedDriveError(err)) throw err;
         set((s) => ({
@@ -493,10 +586,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
           selectedGroupId: s.selectedGroupId?.includes(`shared:${source.id}:`) ? null : s.selectedGroupId,
           activeView: s.selectedGroupId?.includes(`shared:${source.id}:`) ? "all" : s.activeView,
         }));
-        changed = true;
+        // Return a notice for the removed source
+        return `Compartilhamento removido: ${source.name}`;
       }
     }
-    return changed;
+    return false;
   },
 
   syncOwnedSharedSourcesFromVault: () => {
@@ -638,7 +732,33 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   getEncryptedVault: async () => {
     const { vault, masterPassword } = get();
     if (!vault || !masterPassword) throw new Error("Cofre não está desbloqueado");
-    return encryptData(JSON.stringify(vault), masterPassword);
+
+    let dataKey = get().vaultDataKey;
+    let keySlots = get().vaultKeySlots;
+
+    if (!dataKey) dataKey = createVaultDataKey();
+    if (!keySlots.some((slot) => slot.id === "master")) {
+      keySlots = [await createVaultKeySlot("master", masterPassword, dataKey), ...keySlots];
+    }
+
+    set({ vaultDataKey: dataKey, vaultKeySlots: keySlots });
+    return encryptVaultEnvelope(JSON.stringify(vault), dataKey, keySlots);
+  },
+
+  addVaultPasswordSlot: async (id, password) => {
+    if (!password) throw new Error("Senha de compartilhamento obrigatória");
+    let dataKey = get().vaultDataKey;
+    if (!dataKey) {
+      await get().getEncryptedVault();
+      dataKey = get().vaultDataKey;
+    }
+    if (!dataKey) throw new Error("Não foi possível preparar a chave do cofre");
+
+    const slot = await createVaultKeySlot(id, password, dataKey);
+    set((s) => ({
+      vaultKeySlots: [slot, ...s.vaultKeySlots.filter((item) => item.id !== id)],
+      isDirty: true,
+    }));
   },
 
   // ── Local file ────────────────────────────────────────────────────────────
@@ -788,7 +908,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   addGroup: (data) => {
-    if (get().currentUserRole() === "reader") return;
+    if (get().currentUserRole("vault") === "reader") return;
     const group: PasswordGroup = { ...data, id: generateId(), createdAt: now(), updatedAt: now() };
     set((s) => ({
       vault: s.vault ? { ...s.vault, groups: [...s.vault.groups, group] } : s.vault,
@@ -798,7 +918,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   updateGroup: (id, data) => {
-    if (get().currentUserRole() === "reader") return;
+    if (!get().canEditGroup(id)) return;
     set((s) => ({
       vault: s.vault
         ? { ...s.vault, groups: s.vault.groups.map((g) => g.id === id ? { ...g, ...data, updatedAt: now() } : g) }
@@ -809,7 +929,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   deleteGroup: (id) => {
-    if (get().currentUserRole() !== "owner") return;
+    if (get().currentUserRole("group", id) !== "owner") return;
     set((s) => ({
       vault: s.vault
         ? {
@@ -825,7 +945,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   addEntry: (data) => {
-    if (get().currentUserRole() === "reader") return;
+    if (data.groupId) {
+      if (!get().canEditGroup(data.groupId)) return;
+    } else if (get().currentUserRole("vault") === "reader") return;
     if (data.groupId?.startsWith("shared:")) {
       const sourceId = data.groupId.split(":")[1];
       const source = get().sharedSources.find((item) => item.id === sourceId);
@@ -865,7 +987,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   updateEntry: (id, data) => {
-    if (get().currentUserRole() === "reader") return;
+    const localEntry = get().vault?.entries.find((entry) => entry.id === id);
+    if (localEntry && !get().canEditEntry(localEntry)) return;
     if (id.startsWith("shared:")) {
       const sourceId = id.split(":")[1];
       const source = get().sharedSources.find((item) => item.id === sourceId);
@@ -888,7 +1011,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   deleteEntry: (id) => {
-    if (get().currentUserRole() !== "owner") return;
+    const localEntry = get().vault?.entries.find((entry) => entry.id === id);
+    if (localEntry && get().currentUserRole("entry", id) !== "owner") return;
     if (id.startsWith("shared:")) {
       const sourceId = id.split(":")[1];
       const source = get().sharedSources.find((item) => item.id === sourceId);
@@ -911,7 +1035,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   toggleFavorite: (id) => {
-    if (get().currentUserRole() === "reader") return;
+    const localEntry = get().vault?.entries.find((entry) => entry.id === id);
+    if (localEntry && !get().canEditEntry(localEntry)) return;
     if (id.startsWith("shared:")) {
       const sourceId = id.split(":")[1];
       const source = get().sharedSources.find((item) => item.id === sourceId);
@@ -980,23 +1105,36 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     }));
   },
 
-  updateSharedUserRole: (email, role) => {
+  updateSharedUserRole: (email, role, scopeType = "vault", scopeId, scopeTitle) => {
     if (get().currentUserRole() !== "owner") return;
+    const normalizedEmail = email.trim().toLowerCase();
     set((s) => {
       if (!s.vault) return s;
-      const existing = s.vault.sharedWith.find((u) => u.email === email);
+      const sameGrant = (u: SharedUser) =>
+        u.email === normalizedEmail &&
+        (u.scopeType ?? "vault") === scopeType &&
+        (u.scopeId ?? "") === (scopeId ?? "");
+      const existing = s.vault.sharedWith.find(sameGrant);
       const sharedWith = existing
-        ? s.vault.sharedWith.map((u) => u.email === email ? { ...u, role } : u)
-        : [...s.vault.sharedWith, { email, role, addedAt: now() }];
+        ? s.vault.sharedWith.map((u) => sameGrant(u) ? { ...u, role, scopeType, scopeId, scopeTitle } : u)
+        : [...s.vault.sharedWith, { email: normalizedEmail, role, scopeType, scopeId, scopeTitle, addedAt: now() }];
       return { vault: { ...s.vault, sharedWith }, isDirty: true };
     });
   },
 
-  removeSharedUser: (email) => {
+  removeSharedUser: (email, scopeType, scopeId) => {
     if (get().currentUserRole() !== "owner") return;
+    const normalizedEmail = email.trim().toLowerCase();
     set((s) => ({
       vault: s.vault
-        ? { ...s.vault, sharedWith: s.vault.sharedWith.filter((u) => u.email !== email) }
+        ? {
+            ...s.vault,
+            sharedWith: s.vault.sharedWith.filter((u) => {
+              if (u.email !== normalizedEmail) return true;
+              if (!scopeType) return false;
+              return (u.scopeType ?? "vault") !== scopeType || (u.scopeId ?? "") !== (scopeId ?? "");
+            }),
+          }
         : s.vault,
       isDirty: true,
     }));
@@ -1010,16 +1148,25 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
 
   changePassword: async (currentPassword, newPassword) => {
-    const { masterPassword } = get();
+    const { masterPassword, vault, userInfo } = get();
+    if (vault?.owner && userInfo?.email !== vault.owner) throw new Error("Apenas o proprietário pode trocar a senha mestra do cofre");
     if (currentPassword !== masterPassword) throw new Error("Senha atual incorreta");
-    set({ masterPassword: newPassword, isDirty: true });
+    let dataKey = get().vaultDataKey;
+    if (!dataKey) dataKey = createVaultDataKey();
+    const masterSlot = await createVaultKeySlot("master", newPassword, dataKey);
+    set((s) => ({
+      masterPassword: newPassword,
+      vaultDataKey: dataKey,
+      vaultKeySlots: [masterSlot, ...s.vaultKeySlots.filter((slot) => slot.id !== "master")],
+      isDirty: true,
+    }));
   },
 
   getFilteredEntries: () => {
     const { vault, activeView, selectedGroupId, searchQuery, sharedSources } = get();
     if (!vault) return [];
     let entries = [
-      ...vault.entries,
+      ...vault.entries.filter((entry) => get().canViewEntry(entry)),
       ...sharedSources.filter((source) => source.role !== "owner").flatMap((source) => source.entries),
     ];
     if (activeView === "favorites") entries = entries.filter((e) => e.favorite);

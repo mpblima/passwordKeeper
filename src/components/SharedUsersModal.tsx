@@ -74,14 +74,14 @@ export function SharedUsersModal({ onClose }: SharedUsersModalProps) {
                     <div className="flex-1 min-w-0">
                       <p className="text-vault-text text-sm font-medium truncate">{user.email}</p>
                       <p className="text-vault-textMuted text-xs">
-                        {new Date(user.addedAt).toLocaleDateString("pt-BR")}
+                        {(user.scopeTitle ?? "Cofre completo")} · {new Date(user.addedAt).toLocaleDateString("pt-BR")}
                       </p>
                     </div>
 
                     {/* Role selector */}
                     <select
                       value={user.role}
-                      onChange={(e) => updateSharedUserRole(user.email, e.target.value as VaultPermission)}
+                      onChange={(e) => updateSharedUserRole(user.email, e.target.value as VaultPermission, user.scopeType ?? "vault", user.scopeId, user.scopeTitle)}
                       className={`text-xs px-2 py-1 rounded-lg border font-medium bg-transparent cursor-pointer ${roleInfo.color} focus:outline-none`}
                     >
                       <option value="reader">Somente leitura</option>
@@ -99,7 +99,7 @@ export function SharedUsersModal({ onClose }: SharedUsersModalProps) {
                           Não
                         </button>
                         <button
-                          onClick={() => { removeSharedUser(user.email); setConfirmRemove(null); }}
+                          onClick={() => { removeSharedUser(user.email, user.scopeType ?? "vault", user.scopeId); setConfirmRemove(null); }}
                           className="px-2 py-1 text-xs bg-vault-danger/20 border border-vault-danger/30 rounded-lg text-vault-danger font-medium transition-colors"
                         >
                           Sim

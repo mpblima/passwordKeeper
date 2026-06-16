@@ -4,6 +4,7 @@ import { useVaultStore } from "../store/vaultStore";
 import { PasswordEntry, PasswordGroup } from "../types/vault";
 import { IconDisplay } from "./IconDisplay";
 import { PasswordDetail } from "./PasswordDetail";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface PasswordGridProps {
   onAddEntry: (groupId?: string) => void;
@@ -13,11 +14,11 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
   const {
     vault, sharedSources, activeView, selectedGroupId, selectedEntryId, searchQuery, viewMode,
     getFilteredEntries, selectEntry, toggleFavorite, setViewMode,
-    setActiveView, selectGroup, currentUserRole,
+    setActiveView, selectGroup, currentUserRole, canViewGroup, canViewEntry, canEditGroup,
   } = useVaultStore();
   const receivedSharedSources = sharedSources.filter((source) => source.role !== "owner");
 
-  const canAdd = currentUserRole() !== "reader";
+  const canAdd = currentUserRole("vault") !== "reader";
 
   // ── Entry detail view: replaces the grid when a password is selected ─────────
   if (selectedEntryId) {
@@ -48,7 +49,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
       : vault?.groups.find((g) => g.id === selectedGroupId);
     const entries = sharedSource
       ? sharedSource.entries.filter((e) => selectedGroupId.endsWith(":ungrouped") ? !e.groupId : e.groupId === selectedGroupId)
-      : vault?.entries.filter((e) => e.groupId === selectedGroupId) ?? [];
+      : vault?.entries.filter((e) => e.groupId === selectedGroupId && canViewEntry(e)) ?? [];
     const filtered = searchQuery
       ? entries.filter((e) =>
           e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -83,7 +84,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
             <EmptyState
               message={searchQuery ? "Nenhum resultado" : "Nenhuma senha neste grupo"}
               hint={searchQuery ? "Tente outros termos" : undefined}
-              onAdd={canAdd ? () => onAddEntry(selectedGroupId) : undefined}
+              onAdd={selectedGroupId && canEditGroup(selectedGroupId) ? () => onAddEntry(selectedGroupId) : undefined}
             />
           ) : viewMode === "grid" ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 sm:gap-4">
@@ -145,7 +146,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
   }
 
   // ── Root view: groups + ungrouped entries ────────────────────────────────────
-  const groups = vault?.groups ?? [];
+  const groups = vault?.groups.filter((group) => canViewGroup(group.id)) ?? [];
   const sharedGroups = receivedSharedSources.flatMap((source) => {
     const mapped = source.groups.map((group) => ({ group, source }));
     const ungroupedCount = source.entries.filter((entry) => !entry.groupId).length;
@@ -165,7 +166,7 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
       },
     ];
   });
-  const ungrouped = vault?.entries.filter((e) => !e.groupId) ?? [];
+  const ungrouped = vault?.entries.filter((e) => !e.groupId && canViewEntry(e)) ?? [];
   const filteredUngrouped = searchQuery
     ? ungrouped.filter((e) =>
         e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -211,9 +212,9 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
                       <GroupCard
                         key={group.id}
                         group={group}
-                        entryCount={vault?.entries.filter((e) => e.groupId === group.id).length ?? 0}
+                        entryCount={vault?.entries.filter((e) => e.groupId === group.id && canViewEntry(e)).length ?? 0}
                         onOpen={() => selectGroup(group.id)}
-                        onAddEntry={canAdd ? () => onAddEntry(group.id) : undefined}
+                        onAddEntry={canEditGroup(group.id) ? () => onAddEntry(group.id) : undefined}
                       />
                     ))}
                   </div>
@@ -223,9 +224,9 @@ export function PasswordGrid({ onAddEntry }: PasswordGridProps) {
                       <GroupListItem
                         key={group.id}
                         group={group}
-                        entryCount={vault?.entries.filter((e) => e.groupId === group.id).length ?? 0}
+                        entryCount={vault?.entries.filter((e) => e.groupId === group.id && canViewEntry(e)).length ?? 0}
                         onOpen={() => selectGroup(group.id)}
-                        onAddEntry={canAdd ? () => onAddEntry(group.id) : undefined}
+                        onAddEntry={canEditGroup(group.id) ? () => onAddEntry(group.id) : undefined}
                       />
                     ))}
                   </div>
@@ -435,18 +436,32 @@ function EntryCard({ entry, selected, onSelect, onToggleFavorite }: EntryProps) 
   const [showPwd, setShowPwd] = useState(false);
   const [dragging, setDragging] = useState(false);
 
-  function copyUser(e: React.MouseEvent) {
+  async function copyUser(e: React.MouseEvent) {
     e.stopPropagation();
-    navigator.clipboard.writeText(entry.username);
-    setCopiedUser(true);
-    setTimeout(() => setCopiedUser(false), 2000);
+    try {
+      await copyToClipboard(entry.username, {
+        clearAfterMs: 60000, // 60 seconds for usernames
+        showNotification: false
+      });
+      setCopiedUser(true);
+      setTimeout(() => setCopiedUser(false), 2000);
+    } catch (err) {
+      console.warn('Failed to copy username:', err);
+    }
   }
 
-  function copyPwd(e: React.MouseEvent) {
+  async function copyPwd(e: React.MouseEvent) {
     e.stopPropagation();
-    navigator.clipboard.writeText(entry.password);
-    setCopiedPwd(true);
-    setTimeout(() => setCopiedPwd(false), 2000);
+    try {
+      await copyToClipboard(entry.password, {
+        clearAfterMs: 30000, // 30 seconds for passwords
+        showNotification: false
+      });
+      setCopiedPwd(true);
+      setTimeout(() => setCopiedPwd(false), 2000);
+    } catch (err) {
+      console.warn('Failed to copy password:', err);
+    }
   }
 
   return (
@@ -479,7 +494,7 @@ function EntryCard({ entry, selected, onSelect, onToggleFavorite }: EntryProps) 
       {/* Username */}
       <div className="flex items-center gap-2 mb-2">
         <p className="text-vault-textSecondary text-xs truncate flex-1">{entry.username}</p>
-        <button onClick={copyUser} className="p-1 rounded text-vault-textMuted hover:text-vault-primary transition-colors flex-shrink-0">
+        <button onClick={copyUser} title="Copiar usuário" className="p-1 rounded text-vault-textMuted hover:text-vault-primary transition-colors flex-shrink-0">
           {copiedUser ? <Check size={13} className="text-vault-success" /> : <Copy size={13} />}
         </button>
       </div>
@@ -493,7 +508,7 @@ function EntryCard({ entry, selected, onSelect, onToggleFavorite }: EntryProps) 
           <button onClick={(e) => { e.stopPropagation(); setShowPwd(!showPwd); }} className="p-1 rounded text-vault-textMuted hover:text-vault-text transition-colors">
             {showPwd ? <EyeOff size={13} /> : <Eye size={13} />}
           </button>
-          <button onClick={copyPwd} className="p-1 rounded text-vault-textMuted hover:text-vault-primary transition-colors">
+          <button onClick={copyPwd} title="Copiar senha" className="p-1 rounded text-vault-textMuted hover:text-vault-primary transition-colors">
             {copiedPwd ? <Check size={13} className="text-vault-success" /> : <Copy size={13} />}
           </button>
         </div>
@@ -513,18 +528,32 @@ function EntryListItem({ entry, selected, onSelect, onToggleFavorite }: EntryPro
   const [copiedPwd, setCopiedPwd] = useState(false);
   const [dragging, setDragging] = useState(false);
 
-  function copyUser(e: React.MouseEvent) {
+  async function copyUser(e: React.MouseEvent) {
     e.stopPropagation();
-    navigator.clipboard.writeText(entry.username);
-    setCopiedUser(true);
-    setTimeout(() => setCopiedUser(false), 2000);
+    try {
+      await copyToClipboard(entry.username, {
+        clearAfterMs: 60000, // 60 seconds for usernames
+        showNotification: false
+      });
+      setCopiedUser(true);
+      setTimeout(() => setCopiedUser(false), 2000);
+    } catch (err) {
+      console.warn('Failed to copy username:', err);
+    }
   }
 
-  function copyPwd(e: React.MouseEvent) {
+  async function copyPwd(e: React.MouseEvent) {
     e.stopPropagation();
-    navigator.clipboard.writeText(entry.password);
-    setCopiedPwd(true);
-    setTimeout(() => setCopiedPwd(false), 2000);
+    try {
+      await copyToClipboard(entry.password, {
+        clearAfterMs: 30000, // 30 seconds for passwords
+        showNotification: false
+      });
+      setCopiedPwd(true);
+      setTimeout(() => setCopiedPwd(false), 2000);
+    } catch (err) {
+      console.warn('Failed to copy password:', err);
+    }
   }
 
   return (
