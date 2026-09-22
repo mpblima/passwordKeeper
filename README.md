@@ -173,3 +173,4 @@ npm run build
 npm run tauri dev
 npm run tauri build
 ```
+# License by MIT
