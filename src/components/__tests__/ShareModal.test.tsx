@@ -1,16 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
 import { ShareModal } from '../ShareModal';
 import { useVaultStore } from '../../store/vaultStore';
-import { shareFile } from '../../services/googleDrive';
 
 vi.mock('../../store/vaultStore', () => ({
   useVaultStore: vi.fn(),
-}));
-
-vi.mock('../../services/googleDrive', () => ({
-  shareFile: vi.fn().mockResolvedValue(undefined),
-  startOAuthFlow: vi.fn(),
 }));
 
 describe('ShareModal Component', () => {
@@ -30,30 +24,21 @@ describe('ShareModal Component', () => {
     password: 'pass',
   } as any;
 
-  const updateSharedUserRole = vi.fn();
-  const addVaultPasswordSlot = vi.fn().mockResolvedValue(undefined);
-  const syncToCloud = vi.fn().mockResolvedValue(undefined);
+  const createSharedDocument = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     vi.mocked(useVaultStore).mockReturnValue({
       vault: mockVault,
       googleToken: { access_token: 'token', expires_at: Date.now() + 3600000, token_type: 'Bearer' },
-      userInfo: { email: 'owner@example.com', name: 'Owner', picture: '' },
-      driveFileId: 'drive-file-id',
-      setGoogleToken: vi.fn(),
-      ensureValidToken: vi.fn().mockResolvedValue({ access_token: 'token', expires_at: Date.now() + 3600000, token_type: 'Bearer' }),
-      updateSharedUserRole,
-      syncToCloud,
-      addVaultPasswordSlot,
+      createSharedDocument,
     } as any);
-    (useVaultStore as any).getState = vi.fn().mockReturnValue({ driveFileId: 'drive-file-id' });
   });
 
   afterEach(() => {
     vi.resetAllMocks();
   });
 
-  it('should render share modal when target provided', () => {
+  it('should render share modal with correct title for entry type', () => {
     render(<ShareModal target={mockTarget} type="entry" onClose={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: 'Compartilhar' })).toBeInTheDocument();
@@ -61,24 +46,71 @@ describe('ShareModal Component', () => {
     expect(screen.getByText('Senha de compartilhamento')).toBeInTheDocument();
   });
 
-  it('should share the main Drive file and store scoped permission', async () => {
-    render(<ShareModal target={mockTarget} type="entry" onClose={vi.fn()} />);
+  it('should call createSharedDocument with correct params and show success screen', async () => {
+    const onClose = vi.fn();
+    render(<ShareModal target={mockTarget} type="entry" onClose={onClose} />);
 
-    fireEvent.change(screen.getByPlaceholderText('destinatario@gmail.com'), { target: { value: 'dest@example.com' } });
-    fireEvent.change(screen.getByPlaceholderText('Senha para abrir este cofre'), { target: { value: 'share-secret' } });
-    screen.getByRole('button', { name: /compartilhar/i }).click();
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('destinatario@gmail.com'), {
+        target: { value: 'dest@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('Senha para abrir este cofre'), {
+        target: { value: 'share-secret-123' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /compartilhar/i }));
+    });
 
     await waitFor(() => {
-      expect(shareFile).toHaveBeenCalledWith(
-        expect.objectContaining({ access_token: 'token' }),
-        'drive-file-id',
-        'dest@example.com',
-        'reader',
-        expect.any(String)
-      );
+      expect(createSharedDocument).toHaveBeenCalledWith({
+        targetType: 'entry',
+        targetId: '1',
+        targetTitle: 'Test Entry',
+        collaboratorEmail: 'dest@example.com',
+        collaboratorRole: 'reader',
+        sharePassword: 'share-secret-123',
+      });
     });
-    expect(updateSharedUserRole).toHaveBeenCalledWith('dest@example.com', 'reader', 'entry', '1', 'Test Entry');
-    expect(addVaultPasswordSlot).toHaveBeenCalledWith('share:dest@example.com:entry:1', 'share-secret');
-    expect(syncToCloud).toHaveBeenCalled();
+
+    // Should show success screen
+    expect(await screen.findByText('Compartilhado!')).toBeInTheDocument();
+    expect(screen.getByText(/dest@example.com/)).toBeInTheDocument();
+  });
+
+  it('should show error screen when createSharedDocument throws', async () => {
+    createSharedDocument.mockRejectedValueOnce(new Error('Drive não conectado'));
+
+    render(<ShareModal target={mockTarget} type="entry" onClose={vi.fn()} />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('destinatario@gmail.com'), {
+        target: { value: 'dest@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('Senha para abrir este cofre'), {
+        target: { value: 'senha123' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /compartilhar/i }));
+    });
+
+    expect(await screen.findByText('Erro ao compartilhar')).toBeInTheDocument();
+    expect(screen.getByText(/Drive não conectado/)).toBeInTheDocument();
+  });
+
+  it('should disable share button when no Google token', () => {
+    vi.mocked(useVaultStore).mockReturnValue({
+      vault: mockVault,
+      googleToken: null,
+      createSharedDocument,
+    } as any);
+
+    render(<ShareModal target={mockTarget} type="entry" onClose={vi.fn()} />);
+
+    const shareBtn = screen.getByRole('button', { name: /compartilhar/i });
+    expect(shareBtn).toBeDisabled();
   });
 });

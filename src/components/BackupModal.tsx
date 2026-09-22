@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Download, Upload, FolderOpen, Check, AlertCircle, Loader2, Lock, Eye, EyeOff, HardDrive, Cloud, RefreshCw } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
-import { decryptData } from "../services/crypto";
+import { decryptVaultEnvelope } from "../services/crypto";
 import { pickSavePath, pickOpenPath, writeVaultFile, readVaultFile } from "../services/localFile";
 import { downloadVaultFile } from "../services/googleDrive";
 import { VaultData } from "../types/vault";
@@ -83,8 +83,8 @@ export function BackupModal({ onClose }: BackupModalProps) {
     setImportStep("loading");
     try {
       const encrypted = await readVaultFile(importPath);
-      const decrypted = await decryptData(encrypted, importPwd);
-      const otherVault = JSON.parse(decrypted) as VaultData;
+      const decrypted = await decryptVaultEnvelope(encrypted, importPwd);
+      const otherVault = JSON.parse(decrypted.plaintext) as VaultData;
       const count = mergeFromVault(otherVault);
       setImportCount(count);
       setImportStep("done");

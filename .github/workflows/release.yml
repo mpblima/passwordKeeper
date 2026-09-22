@@ -11,6 +11,7 @@
 # GitHub Secrets necessários:
 #   VITE_GOOGLE_CLIENT_ID        — Google OAuth Client ID
 #   VITE_GOOGLE_CLIENT_SECRET    — Google OAuth Client Secret
+#   VITE_GOOGLE_ANDROID_CLIENT_ID — Google OAuth Android Client ID
 #
 # Secrets opcionais para assinatura consistente do APK Android:
 #   ANDROID_KEYSTORE_B64         — Keystore .jks codificado em Base64
@@ -107,9 +108,10 @@ jobs:
       - name: Build e publicar na release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN:              ${{ secrets.GITHUB_TOKEN }}
-          VITE_GOOGLE_CLIENT_ID:     ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
-          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+          GITHUB_TOKEN:                   ${{ secrets.GITHUB_TOKEN }}
+          VITE_GOOGLE_CLIENT_ID:          ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET:      ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+          VITE_GOOGLE_ANDROID_CLIENT_ID:  ${{ secrets.VITE_GOOGLE_ANDROID_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Password Keeper ${{ github.ref_name }}'
@@ -203,8 +205,9 @@ jobs:
 
       - name: Build Android APK
         env:
-          VITE_GOOGLE_CLIENT_ID:     ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
-          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+          VITE_GOOGLE_CLIENT_ID:          ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET:      ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+          VITE_GOOGLE_ANDROID_CLIENT_ID:  ${{ secrets.VITE_GOOGLE_ANDROID_CLIENT_ID }}
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.11902837
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.11902837
         run: npm run tauri android build -- --apk

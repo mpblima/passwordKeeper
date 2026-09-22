@@ -13,13 +13,29 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val dotEnv = Properties().apply {
+    val envFile = file("../../../../.env")
+    if (envFile.exists()) {
+        envFile.inputStream().use { load(it) }
+    }
+}
+
+fun configValue(name: String): String? = System.getenv(name) ?: dotEnv.getProperty(name)
+
+val googleAndroidClientId = configValue("VITE_GOOGLE_ANDROID_CLIENT_ID").orEmpty()
+val appAuthRedirectScheme = googleAndroidClientId
+    .removeSuffix(".apps.googleusercontent.com")
+    .takeIf { it.isNotBlank() }
+    ?.let { "com.googleusercontent.apps.$it" }
+    ?: "passwordkeeper"
+
 android {
     compileSdk = 36
-    namespace = "com.passwordkeeper.app"
+    namespace = "com.passwordkeeper.vault"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        manifestPlaceholders["appAuthRedirectScheme"] = "com.googleusercontent.apps.288890427052-q2md4inn019hkei71pa9deu0d2vlt9cl"
-        applicationId = "com.passwordkeeper.app"
+        manifestPlaceholders["appAuthRedirectScheme"] = appAuthRedirectScheme
+        applicationId = "com.passwordkeeper.vault"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

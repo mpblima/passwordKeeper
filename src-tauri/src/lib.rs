@@ -49,7 +49,7 @@ async fn android_http_request(
         ).map_err(|e| { let _ = env.exception_clear(); format!("getClassLoader: {}", e) })?
         .l().map_err(|e| e.to_string())?;
 
-        let class_name = env.new_string("com.passwordkeeper.app.NativeHttp")
+        let class_name = env.new_string("com.passwordkeeper.vault.NativeHttp")
             .map_err(|e| e.to_string())?;
         let loaded = env.call_method(
             &loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;",
@@ -169,7 +169,7 @@ async fn start_oauth_android_native(
         ).map_err(|e| { let _ = env.exception_clear(); format!("getClassLoader: {}", e) })?
         .l().map_err(|e| e.to_string())?;
 
-        let class_name = env.new_string("com.passwordkeeper.app.GoogleOAuthManager")
+        let class_name = env.new_string("com.passwordkeeper.vault.GoogleOAuthManager")
             .map_err(|e| e.to_string())?;
         let loaded = env.call_method(
             &loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;",
@@ -253,7 +253,7 @@ async fn start_oauth_android_native(
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_passwordkeeper_app_GoogleOAuthBridge_finishOAuth(
+pub extern "system" fn Java_com_passwordkeeper_vault_GoogleOAuthBridge_finishOAuth(
     mut env: jni::JNIEnv,
     _class: jni::objects::JClass,
     result_json: jni::objects::JString,

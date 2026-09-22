@@ -47,6 +47,7 @@ Variaveis usadas:
 ```env
 VITE_GOOGLE_CLIENT_ID=SEU_CLIENT_ID_AQUI.apps.googleusercontent.com
 VITE_GOOGLE_CLIENT_SECRET=GOCSPX-SEU_SECRET_AQUI
+VITE_GOOGLE_ANDROID_CLIENT_ID=SEU_CLIENT_ID_ANDROID_AQUI.apps.googleusercontent.com
 ```
 
 O arquivo `.env` nao deve ser commitado.
@@ -85,12 +86,14 @@ Para usar sincronizacao e compartilhamento:
 3. Ative a Google Drive API
 4. Crie um OAuth Client ID do tipo Desktop app
 5. Configure `http://localhost:8899` como URI de redirecionamento autorizado
-6. Coloque o Client ID e Client Secret no `.env`
+6. Crie um OAuth Client ID do tipo Android com package `com.passwordkeeper.vault`
+7. Coloque o Client ID, Client Secret e Android Client ID no `.env`
 
 Em CI/CD, configure os secrets:
 
 - `VITE_GOOGLE_CLIENT_ID`
 - `VITE_GOOGLE_CLIENT_SECRET`
+- `VITE_GOOGLE_ANDROID_CLIENT_ID`
 
 ## Compartilhamento
 
@@ -134,6 +137,8 @@ Se algum segredo ja foi commitado em algum momento, rotacione as credenciais no 
 ## Release
 
 O workflow principal de release roda ao criar tags `v*` e gera pacotes desktop e Android.
+Antes de promover uma build para uso publico ou comercial, siga a checklist em
+[`docs/release-readiness.md`](docs/release-readiness.md).
 
 Secrets recomendados para Android:
 

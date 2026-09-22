@@ -1,5 +1,8 @@
-# IA
+# IA / editor
 .claude
+.aider*
+.codex
+.openclaude-profile.json
 
 # Node
 node_modules/
@@ -11,7 +14,7 @@ src-tauri/target/
 # Tauri store (dados locais do usuário, não devem ir pro repositório)
 vault-config.json
 
-# Env local (se criar um .env com as credenciais para desenvolvimento)
+# Env local (credenciais de desenvolvimento)
 .env
 .env.local
 
@@ -19,4 +22,9 @@ vault-config.json
 client_secret*.json
 *.jks
 *.keystore
-.aider*
+
+# Pastas geradas por agentes de IA (artefatos acidentais)
+path/
+"Conteúdo do Arquivo `src/"
+"Conteúdo do arquivo `src/"
+"Conteúdo do Arquivo `src-tauri/"

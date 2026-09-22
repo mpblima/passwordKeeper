@@ -50,8 +50,13 @@
     "type": "git",
     "url": "git+https://github.com/mpblima/passwordKeeper.git"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "password-manager",
+    "vault",
+    "tauri",
+    "encryption"
+  ],
+  "author": "Marcos Paulo Blima",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/mpblima/passwordKeeper/issues"

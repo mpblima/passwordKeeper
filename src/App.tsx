@@ -8,97 +8,104 @@ import { AppMenuBar } from "./components/AppMenuBar";
 import { Cloud, RefreshCw, AlertCircle, X } from "lucide-react";
 import { usePlatform } from "./hooks/usePlatform";
 
+// Intervalo de polling da Drive Changes API (ms).
+// A Changes API é eficiente — retorna rapidamente sem mudanças (sem custo de download).
+const DRIVE_POLL_INTERVAL_MS = 5000;
+
 export function App() {
   const { isAndroid } = usePlatform();
   const {
     isLocked, isDirty, isSyncing, syncError, vault,
-    googleToken, localVaultPath, driveFileId,
-    syncToCloud, saveToLocalFile, initFromStorage, refreshFromCloudIfChanged,
-    refreshSharedSources, forceSync, clearSyncError,
-    lockVault
+    googleToken, localVaultPath,
+    syncToCloud, saveToLocalFile, initFromStorage,
+    pollDriveChanges, initDriveChangesToken,
+    forceSync, clearSyncError, lockVault,
   } = useVaultStore();
+
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [addEntryGroupId, setAddEntryGroupId] = useState<string | undefined>();
-  const [autoSyncTimer, setAutoSyncTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sharedNotice, setSharedNotice] = useState("");
   const [isForceSyncing, setIsForceSyncing] = useState(false);
 
-  // Load persisted credentials from Tauri store on startup
+  // ── Inicialização ──────────────────────────────────────────────────────────
   useEffect(() => {
     initFromStorage().catch(() => {});
   }, []);
 
-  // Auto-save: local file and/or Drive after 5s of inactivity.
-  // Skip syncToCloud when the main vault IS a shared collaboration file —
-  // that would overwrite the shared Drive file with the wrong encryption password.
-  useEffect(() => {
-    if (!isDirty) return;
-    if (autoSyncTimer) clearTimeout(autoSyncTimer);
-    const timer = setTimeout(() => {
-      const state = useVaultStore.getState();
-      // Block syncToCloud only when the OWNER of a collab vault would encrypt with the wrong password.
-      // Editors open with the share password as masterPassword, so their sync is correct.
-      const isOwnerOfCollabVault = !!state.vault?.collaboration && state.currentUserRole() === "owner";
-      if (localVaultPath || isAndroid) saveToLocalFile(localVaultPath ?? undefined).catch(() => {});
-      if (googleToken && !isOwnerOfCollabVault) syncToCloud().catch(() => {});
-    }, 5000);
-    setAutoSyncTimer(timer);
-    return () => clearTimeout(timer);
-  }, [isDirty, googleToken, localVaultPath, isAndroid]);
-
-  // Collaborative Drive documents: pull remote changes while the local vault is clean.
-  useEffect(() => {
-    if (isLocked || !googleToken || !driveFileId) return;
-    const timer = setInterval(() => {
-      refreshFromCloudIfChanged().catch(() => {});
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [isLocked, googleToken, driveFileId, refreshFromCloudIfChanged]);
-
-  // Poll shared sources every second for collaborator updates.
+  // Obtém o changesToken do Drive assim que o cofre é desbloqueado com Drive conectado.
+  // Sem esse token o polling não consegue detectar mudanças.
   useEffect(() => {
     if (isLocked || !googleToken) return;
-    const timer = setInterval(() => {
-      refreshSharedSources()
+    initDriveChangesToken().catch(() => {});
+  }, [isLocked, googleToken]);
+
+  // ── Auto-save ──────────────────────────────────────────────────────────────
+  // Salva localmente e/ou no Drive 5s após a última alteração.
+  // Não sincroniza para o Drive quando o proprietário abriu um vault colaborativo
+  // (isso sobrescreveria o arquivo compartilhado com a senha mestra errada).
+  useEffect(() => {
+    if (!isDirty) return;
+    if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    autoSyncTimerRef.current = setTimeout(() => {
+      const state = useVaultStore.getState();
+      const isOwnerOfCollabVault =
+        !!state.vault?.collaboration && state.currentUserRole() === "owner";
+      if (localVaultPath || isAndroid) {
+        saveToLocalFile(localVaultPath ?? undefined).catch(() => {});
+      }
+      if (googleToken && !isOwnerOfCollabVault) {
+        syncToCloud().catch(() => {});
+      }
+    }, 5000);
+    return () => {
+      if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    };
+  }, [isDirty, googleToken, localVaultPath, isAndroid]);
+
+  // ── Polling Drive Changes API ──────────────────────────────────────────────
+  // Um único setInterval substitui os dois intervalos anteriores (10s vault + 3s shares).
+  // A Changes API retorna apenas os fileIds alterados — zero downloads desnecessários.
+  // Isso cobre tanto o cofre principal quanto todos os documentos compartilhados.
+  useEffect(() => {
+    if (isLocked || !googleToken) return;
+
+    const tick = () => {
+      pollDriveChanges()
         .then((notice) => {
           if (!notice) return;
           setSharedNotice(notice);
-          setTimeout(() => setSharedNotice(""), 3000);
+          setTimeout(() => setSharedNotice(""), 4000);
         })
         .catch(() => {});
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [isLocked, googleToken, refreshSharedSources]);
+    };
 
-  // Auto-lock vault after 5 minutes of inactivity
+    const timer = setInterval(tick, DRIVE_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [isLocked, googleToken, pollDriveChanges]);
+
+  // ── Auto-lock por inatividade (5 min) ────────────────────────────────────
   useEffect(() => {
     if (isLocked) return;
 
-    const handleUserActivity = () => {
+    const resetTimer = () => {
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = setTimeout(() => {
-        lockVault();
-      }, 5 * 60 * 1000); // 5 minutes
+      inactivityTimerRef.current = setTimeout(() => lockVault(), 5 * 60 * 1000);
     };
 
-    // Set up event listeners for user activity
-    ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
-      window.addEventListener(event, handleUserActivity);
-    });
-
-    // Initialize the timer
-    handleUserActivity();
+    const EVENTS = ["mousedown", "mousemove", "keypress", "scroll", "touchstart"] as const;
+    EVENTS.forEach((ev) => window.addEventListener(ev, resetTimer));
+    resetTimer();
 
     return () => {
-      ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
-        window.removeEventListener(event, handleUserActivity);
-      });
+      EVENTS.forEach((ev) => window.removeEventListener(ev, resetTimer));
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
       inactivityTimerRef.current = null;
     };
   }, [isLocked, lockVault]);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
   async function handleForceSync() {
     setIsForceSyncing(true);
     try {
@@ -108,6 +115,7 @@ export function App() {
     }
   }
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   if (isLocked) {
     return <MasterPasswordScreen />;
   }
@@ -165,14 +173,21 @@ export function App() {
       {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
-          onAddEntry={(groupId) => { setAddEntryGroupId(groupId); setShowAddEntry(true); }}
+          onAddEntry={(groupId) => {
+            setAddEntryGroupId(groupId);
+            setShowAddEntry(true);
+          }}
           onForceSync={handleForceSync}
           isForceSyncing={isForceSyncing}
         />
 
-        {/* Content area */}
         <main className="flex-1 flex overflow-hidden">
-          <PasswordGrid onAddEntry={(groupId) => { setAddEntryGroupId(groupId); setShowAddEntry(true); }} />
+          <PasswordGrid
+            onAddEntry={(groupId) => {
+              setAddEntryGroupId(groupId);
+              setShowAddEntry(true);
+            }}
+          />
         </main>
       </div>
 
@@ -180,7 +195,10 @@ export function App() {
       {showAddEntry && (
         <PasswordForm
           defaultGroupId={addEntryGroupId}
-          onClose={() => { setShowAddEntry(false); setAddEntryGroupId(undefined); }}
+          onClose={() => {
+            setShowAddEntry(false);
+            setAddEntryGroupId(undefined);
+          }}
         />
       )}
     </div>

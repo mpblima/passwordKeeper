@@ -345,6 +345,59 @@ export async function shareFile(
   }
 }
 
+// ─── Drive Changes API (long-poll quasi-realtime) ─────────────────────────────
+
+/**
+ * Obtém um pageToken inicial para começar a observar mudanças no Drive.
+ * Deve ser chamado uma vez ao conectar ou reabrir o cofre.
+ */
+export async function getDriveChangesStartToken(token: GoogleToken): Promise<string> {
+  const headers = await authHeaders(token);
+  const res = await rustFetch(
+    "GET",
+    "https://www.googleapis.com/drive/v3/changes/startPageToken",
+    headers,
+  );
+  if (!res.ok) throw new Error(`Erro ao obter startPageToken (${res.status}): ${res.text()}`);
+  const data = res.json() as { startPageToken: string };
+  return data.startPageToken;
+}
+
+/**
+ * Lista mudanças desde o pageToken fornecido.
+ * Retorna os IDs de arquivos alterados e o próximo pageToken.
+ * Use `includeRemoved=false` para ignorar exclusões.
+ */
+export async function listDriveChanges(
+  token: GoogleToken,
+  pageToken: string,
+): Promise<{ changedFileIds: string[]; nextPageToken: string }> {
+  const headers = await authHeaders(token);
+  const params = new URLSearchParams({
+    pageToken,
+    fields: "nextPageToken,newStartPageToken,changes(fileId,removed)",
+    spaces: "drive",
+    includeRemoved: "false",
+  });
+  const res = await rustFetch(
+    "GET",
+    `https://www.googleapis.com/drive/v3/changes?${params}`,
+    headers,
+  );
+  if (!res.ok) throw new Error(`Erro ao listar mudanças (${res.status}): ${res.text()}`);
+  const data = res.json() as {
+    nextPageToken?: string;
+    newStartPageToken?: string;
+    changes?: { fileId: string; removed?: boolean }[];
+  };
+  const changedFileIds = (data.changes ?? [])
+    .filter((c) => !c.removed)
+    .map((c) => c.fileId);
+  // Google retorna newStartPageToken quando chegou ao fim da lista de mudanças
+  const nextPageToken = data.newStartPageToken ?? data.nextPageToken ?? pageToken;
+  return { changedFileIds, nextPageToken };
+}
+
 export async function createSharedVaultFile(
   token: GoogleToken,
   content: string,

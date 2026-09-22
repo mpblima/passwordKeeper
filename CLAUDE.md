@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI agents working with code in this repository.
 
 ## Commands
 
@@ -17,11 +17,12 @@ npm run build
 # Validate Rust backend only
 cd src-tauri && cargo check
 
+# Run test suite
+npm test -- --run
+
 # Build for release
 npm run tauri build
 ```
-
-There is no test suite. TypeScript type-checking (`tsc`) is the primary correctness gate for the frontend.
 
 ## Environment
 
@@ -30,9 +31,19 @@ Copy `.env.example` to `.env` and fill in Google OAuth credentials before runnin
 ```env
 VITE_GOOGLE_CLIENT_ID=...apps.googleusercontent.com
 VITE_GOOGLE_CLIENT_SECRET=GOCSPX-...
+VITE_GOOGLE_ANDROID_CLIENT_ID=...apps.googleusercontent.com  # Android only
 ```
 
 Google Cloud Console setup: create a **Desktop app** OAuth Client ID with `http://localhost:8899` as the authorized redirect URI.
+
+## Tests
+
+Vitest + `@testing-library/react` + happy-dom. Tests live in:
+- `src/services/crypto.test.ts` — AES-256-GCM, PBKDF2, envelope v1/v2
+- `src/__tests__/App.test.tsx` — auto-lock, polling behaviour
+- `src/components/__tests__/` — PasswordDetail, PasswordGrid, ShareModal
+
+Run: `npm test -- --run` (single pass) or `npm run test:watch` (watch mode).
 
 ## Architecture
 
@@ -49,8 +60,8 @@ The master password is held in memory inside `useVaultStore` (Zustand) and never
 All application state lives in a single Zustand store: `src/store/vaultStore.ts`. It manages:
 - Auth/lock state and master password
 - The decrypted `VaultData` in memory
-- Google token and Drive file references
-- `sharedSources[]` — vaults received via collaborative sharing
+- Google token, Drive file references, and Drive Changes API token (`driveChangesToken`)
+- `sharedSources[]` — collaborative vaults received via sharing (separate `.keep` files on Drive)
 - UI state (selected entry/group, view mode, search query)
 
 Persistence uses a dual-write strategy: `@tauri-apps/plugin-store` (reliable, async) plus `localStorage` as a synchronous cold-start fallback. Sensitive keys (Google token) are written only to the Tauri store, never to `localStorage`.
@@ -74,14 +85,23 @@ Persistence uses a dual-write strategy: `@tauri-apps/plugin-store` (reliable, as
 
 ### Google Drive sync
 
-`src/services/googleDrive.ts` handles all Drive API calls via `native_fetch`. The vault file is named `meu-cofre.keep`. Collaborative shares are named `pk-collab-<documentId>.keep`.
+`src/services/googleDrive.ts` handles all Drive API calls via `native_fetch`. The main vault file is named `meu-cofre.keep`. Collaborative shares are named `pk-collab-<documentId>.keep`.
 
-Auto-save fires 5 seconds after any `isDirty` change (see `App.tsx`). The Drive revision header is tracked to avoid redundant downloads. Shared sources are polled every 3 seconds; the main vault is polled every 10 seconds for remote changes.
+Auto-save fires 5 seconds after any `isDirty` change (see `App.tsx`). Drive changes are detected via the **Drive Changes API** (`GET /drive/v3/changes`) with a persistent `pageToken`. A single `pollDriveChanges` interval (5 s) covers both the main vault and all shared sources — it only downloads a file when its `fileId` appears in the changes list, so idle cycles are near-zero cost.
 
 ### Sharing model
 
-A shared document is a separate encrypted `.keep` file on Drive with its own password. IDs for entries and groups from shared sources are namespaced as `shared:<sourceId>:entry:<id>` and `shared:<sourceId>:group:<id>` to avoid collisions with the main vault. Owners see merged updates from collaborators; editors write directly to the shared file. Readers are read-only.
+A shared document is a **separate** encrypted `pk-collab-<uuid>.keep` file on Drive encrypted with an **envelope v2 multi-slot**: one key slot for the owner (master password) and one for each collaborator (share password). The main vault file is never exposed to collaborators.
+
+IDs for entries and groups from shared sources are namespaced as `shared:<sourceId>:entry:<id>` and `shared:<sourceId>:group:<id>` to avoid collisions with the main vault. Owners see merged updates from collaborators; editors write directly to the shared file. Readers are read-only.
+
+### Encryption formats
+
+- **Envelope v2 (current):** JSON `{ format, version: 2, payload: { iv, data }, keySlots[] }` — multi-password support via key slots.
+- **Legacy v1:** raw `[16B salt][12B iv][ciphertext]` concatenated and base64-encoded. Read-only; new files always use v2.
 
 ### Release
 
 Releases are triggered by pushing a `v*` tag. The GitHub Actions workflow (`release.yml`) builds for Linux, Windows, macOS, and Android. Android signing uses the `ANDROID_KEYSTORE_B64` secret (Base64-encoded `.jks`); if absent, a temporary keystore is generated.
+
+Security pipeline (`security.yml`) runs on every PR and push to master: `npm audit` (SCA) + Gitleaks (secret scan). SAST/SCA via Aikido is handled by the native GitHub PR Gating integration (no CI minutes consumed).

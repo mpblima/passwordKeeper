@@ -9,6 +9,7 @@ import {
   findAllVaultFiles, findAllCollaborativeVaultFiles, downloadVaultFile,
   startOAuthFlow, getUserInfo, getFileVersion,
 } from "../services/googleDrive";
+import { decryptVaultEnvelope } from "../services/crypto";
 import { getMobileVaultPath, pickOpenPath, readVaultFile } from "../services/localFile";
 import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
 
@@ -61,6 +62,7 @@ export function MasterPasswordScreen() {
     googleToken, userInfo,
     setGoogleToken, setUserInfo, setDriveFileId, setDriveRevision,
     localVaultPath, ensureValidToken, dismissedShareFileIds, dismissShareFile,
+    addSharedSource, initDriveChangesToken,
   } = useVaultStore();
 
   const [mode, setMode] = useState<ScreenMode>(
@@ -280,13 +282,26 @@ export function MasterPasswordScreen() {
     try {
       const token = await ensureValidToken();
       const encrypted = await downloadVaultFile(token, selectedShareFileId);
-      await unlockVault(encrypted, shareUnlockPwd);
+
+      // Decriptar para extrair as entradas e levá-las para o destino escolhido
+      const opened = await decryptVaultEnvelope(encrypted, shareUnlockPwd);
+      const remoteData = JSON.parse(opened.plaintext) as { entries?: unknown[]; groups?: unknown[]; owner?: string; collaboration?: unknown; sharedWith?: unknown[] };
       const revision = await getFileVersion(token, selectedShareFileId);
-      setDriveFileId(selectedShareFileId);
       setDriveRevision(revision);
+
+      // Identificar grupo e entradas do compartilhamento para o fluxo de importação
+      const groups = (remoteData.groups ?? []) as import("../types/vault").PasswordGroup[];
+      const entries = (remoteData.entries ?? []) as import("../types/vault").PasswordEntry[];
+      const group = groups.length === 1 ? groups[0] : null;
+      const role = (remoteData.sharedWith as import("../types/vault").SharedUser[] | undefined)
+        ?.find((u) => useVaultStore.getState().userInfo?.email === u.email)?.role ?? "reader";
+
+      setPendingShare({ entries, group, role, sharedBy: remoteData.owner });
+      setLoading(false);
+      setMode("import-dest");
     } catch (err) {
       const msg = String(err);
-      if (msg.toLowerCase().includes("decrypt") || msg.includes("tag") || msg.includes("cipher")) {
+      if (msg.toLowerCase().includes("decrypt") || msg.includes("tag") || msg.includes("cipher") || msg.includes("Senha")) {
         setError("Senha do compartilhamento incorreta");
       } else { setError(friendlyError(err)); }
       setLoading(false);

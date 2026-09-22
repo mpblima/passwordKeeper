@@ -14,7 +14,7 @@ vi.mock('../components/AppMenuBar', () => ({ AppMenuBar: () => <nav>Menu</nav> }
 vi.mock('../components/PasswordForm', () => ({ PasswordForm: () => <div>Form</div> }));
 vi.mock('../hooks/usePlatform', () => ({ usePlatform: () => ({ isAndroid: false }) }));
 
-describe('App Component - Auto Lock Functionality', () => {
+describe('App Component - Auto Lock & Polling', () => {
   const makeState = (overrides: Record<string, unknown> = {}) => ({
     isLocked: false,
     isDirty: false,
@@ -27,8 +27,8 @@ describe('App Component - Auto Lock Functionality', () => {
     syncToCloud: vi.fn(),
     saveToLocalFile: vi.fn(),
     initFromStorage: vi.fn().mockResolvedValue(undefined),
-    refreshSharedSources: vi.fn().mockResolvedValue(false),
-    refreshFromCloudIfChanged: vi.fn().mockResolvedValue(false),
+    initDriveChangesToken: vi.fn().mockResolvedValue(undefined),
+    pollDriveChanges: vi.fn().mockResolvedValue(false),
     forceSync: vi.fn(),
     clearSyncError: vi.fn(),
     lockVault: vi.fn(),
@@ -66,7 +66,7 @@ describe('App Component - Auto Lock Functionality', () => {
     expect(state.lockVault).toHaveBeenCalled();
   });
 
-  it('should reset timer on user activity', () => {
+  it('should reset inactivity timer on user activity', () => {
     render(<App />);
 
     act(() => {
@@ -98,5 +98,27 @@ describe('App Component - Auto Lock Functionality', () => {
     });
 
     expect(state.lockVault).not.toHaveBeenCalled();
+  });
+
+  it('should call pollDriveChanges on interval when Drive is connected', () => {
+    state = makeState({ googleToken: { access_token: 'tok', expires_at: Date.now() + 3600000, token_type: 'Bearer' } });
+    vi.mocked(useVaultStore).mockImplementation(() => state as any);
+    (useVaultStore as any).getState = vi.fn(() => state);
+
+    render(<App />);
+
+    act(() => { vi.advanceTimersByTime(5000); });
+    expect(state.pollDriveChanges).toHaveBeenCalledTimes(1);
+
+    act(() => { vi.advanceTimersByTime(5000); });
+    expect(state.pollDriveChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it('should NOT call pollDriveChanges when Drive is not connected', () => {
+    // googleToken: null (default state)
+    render(<App />);
+
+    act(() => { vi.advanceTimersByTime(15000); });
+    expect(state.pollDriveChanges).not.toHaveBeenCalled();
   });
 });

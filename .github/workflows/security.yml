@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Password Keeper — Security pipeline
+#
+# Roda em todo pull request e push para master, além de disparos manuais.
+# Cobre duas camadas de segurança local:
+#
+#   1. npm audit  — SCA para dependências de produção (CVEs)
+#   2. Gitleaks   — busca de credenciais hardcoded no código
+#
+# O SAST/SCA via Aikido é feito pelo PR Gating nativo do dashboard Aikido
+# (GitHub App instalado no repositório), sem consumir CI minutes.
+# Configuração: app.aikido.dev → Settings → Integrations → GitHub → PR Gating
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Security
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. SCA local — npm audit ─────────────────────────────────────────────────
+  # Auditoria rápida e sem dependência de serviço externo.
+  # Falha se houver vulnerabilidade de alta severidade em dependências de produção.
+  npm-audit:
+    name: npm Audit (SCA)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Auditar dependências de produção
+        # --omit=dev: ignora devDependencies (ferramentas de build/test)
+        # --audit-level=high: bloqueia em HIGH e CRITICAL
+        run: npm audit --omit=dev --audit-level=high
+
+  # ── 2. Secret scan — gitleaks ────────────────────────────────────────────────
+  # Detecta segredos hardcoded (tokens, chaves de API, senhas) em todo o histórico
+  # do PR, não apenas no último commit.
+  secret-scan:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks — escanear segredos no código
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # necessário apenas para orgs privadas

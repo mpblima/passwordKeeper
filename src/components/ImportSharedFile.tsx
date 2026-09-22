@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { X, Share2, Lock, Check, AlertCircle, Eye, EyeOff, Loader2, RefreshCw, ArrowRight, FileKey } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
 import { findAllVaultFiles, downloadVaultFile, getFileVersion } from "../services/googleDrive";
+import { decryptVaultEnvelope } from "../services/crypto";
+import { VaultData } from "../types/vault";
 
 interface ImportSharedFileProps {
   onClose: () => void;
@@ -9,7 +11,8 @@ interface ImportSharedFileProps {
 
 export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
   const {
-    googleToken, userInfo, ensureValidToken, unlockVault, setDriveFileId, setDriveRevision,
+    googleToken, userInfo, ensureValidToken, addSharedSource, initDriveChangesToken,
+    setDriveRevision,
   } = useVaultStore();
   const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
@@ -41,9 +44,24 @@ export function ImportSharedFile({ onClose }: ImportSharedFileProps) {
     try {
       const token = await ensureValidToken();
       const encrypted = await downloadVaultFile(token, selectedFileId);
-      await unlockVault(encrypted, password);
+
+      // Usar decryptVaultEnvelope para suportar v2 (envelope multi-slot) e legado
+      const opened = await decryptVaultEnvelope(encrypted, password);
+      const remoteData = JSON.parse(opened.plaintext) as VaultData;
       const revision = await getFileVersion(token, selectedFileId);
-      setDriveFileId(selectedFileId);
+
+      // Registrar como SharedSource — mantém o arquivo colaborativo separado
+      addSharedSource(
+        selectedFileId,
+        remoteData,
+        password,
+        revision,
+        { dataKey: opened.dataKey, keySlots: opened.keySlots },
+      );
+
+      // Inicializar changesToken para receber atualizações em tempo real
+      await initDriveChangesToken();
+
       setDriveRevision(revision);
       setStep("done");
       setTimeout(onClose, 800);

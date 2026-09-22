@@ -2,7 +2,6 @@ import { useState } from "react";
 import { X, Share2, Mail, Copy, Check, AlertCircle, Lock, ShieldCheck, Eye, Edit } from "lucide-react";
 import { useVaultStore } from "../store/vaultStore";
 import { PasswordEntry, PasswordGroup, VaultPermission } from "../types/vault";
-import { shareFile, startOAuthFlow } from "../services/googleDrive";
 import { copyToClipboard } from "../utils/clipboard";
 
 interface ShareModalProps {
@@ -27,16 +26,13 @@ const ROLE_OPTIONS: { value: VaultPermission; label: string; desc: string; icon:
   {
     value: "owner",
     label: "Proprietário",
-    desc: "Acesso total ao escopo autorizado, incluindo exclusões permitidas.",
+    desc: "Acesso total ao escopo autorizado, incluindo exclusões.",
     icon: <ShieldCheck size={15} />,
   },
 ];
 
 export function ShareModal({ target, type, onClose }: ShareModalProps) {
-  const {
-    vault, googleToken, setGoogleToken, ensureValidToken, updateSharedUserRole,
-    syncToCloud, driveFileId, addVaultPasswordSlot,
-  } = useVaultStore();
+  const { vault, googleToken, createSharedDocument } = useVaultStore();
   const [step, setStep] = useState<"form" | "sharing" | "done" | "error">("form");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<VaultPermission>("reader");
@@ -53,36 +49,15 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
   async function handleShare() {
     if (!email.trim() || !sharePassword) return;
     setStep("sharing");
-
     try {
-      let token;
-      try {
-        token = await ensureValidToken();
-      } catch {
-        token = await startOAuthFlow(true);
-        setGoogleToken(token);
-      }
-
-      let fileId = driveFileId;
-      if (!fileId) {
-        await syncToCloud();
-        fileId = useVaultStore.getState().driveFileId;
-      }
-      if (!fileId) throw new Error("Não foi possível criar o arquivo principal no Google Drive.");
-
-      const collaborator = email.trim().toLowerCase();
-      const driveRole = role === "reader" ? "reader" : "writer";
-      await shareFile(
-        token,
-        fileId,
-        collaborator,
-        driveRole,
-        `Voce recebeu acesso ao Password Keeper: ${title}. Abra o mesmo cofre pelo app usando Google Drive.`
-      );
-
-      updateSharedUserRole(collaborator, role, type, target?.id, title);
-      await addVaultPasswordSlot(`share:${collaborator}:${type}:${target?.id ?? "vault"}`, sharePassword);
-      await syncToCloud();
+      await createSharedDocument({
+        targetType: type,
+        targetId: target?.id ?? null,
+        targetTitle: title,
+        collaboratorEmail: email.trim(),
+        collaboratorRole: role,
+        sharePassword,
+      });
       setStep("done");
     } catch (err) {
       setErrorMsg(String(err));
@@ -132,11 +107,12 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 <div className="p-3 bg-vault-warning/10 border border-vault-warning/30 rounded-xl flex items-start gap-2">
                   <AlertCircle size={16} className="text-vault-warning mt-0.5 flex-shrink-0" />
                   <p className="text-sm text-vault-warning">
-                    Conecte ao Google Drive primeiro para compartilhar o arquivo principal.
+                    Conecte ao Google Drive primeiro para compartilhar.
                   </p>
                 </div>
               )}
 
+              {/* Email */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
                   <Mail size={13} className="inline mr-1" />
@@ -151,6 +127,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 />
               </div>
 
+              {/* Role */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-2">
                   Nível de acesso
@@ -181,6 +158,7 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 </div>
               </div>
 
+              {/* Share password */}
               <div>
                 <label className="block text-sm font-medium text-vault-textSecondary mb-1.5">
                   <Lock size={13} className="inline mr-1" />
@@ -203,19 +181,20 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                       Gerar
                     </button>
                     {sharePassword && (
-                      <button type="button" onClick={copyPassword} title="Copiar senha de compartilhamento" className="p-1.5 text-vault-textMuted hover:text-vault-text transition-colors">
+                      <button type="button" onClick={copyPassword} title="Copiar senha" className="p-1.5 text-vault-textMuted hover:text-vault-text transition-colors">
                         {copiedPwd ? <Check size={14} className="text-vault-success" /> : <Copy size={14} />}
                       </button>
                     )}
                   </div>
                 </div>
                 <p className="text-xs text-vault-textMuted mt-1">
-                  Envie esta senha ao destinatário por outro canal. Não envie sua senha mestra.
+                  Envie esta senha ao destinatário por outro canal. Nunca envie sua senha mestra.
                 </p>
               </div>
 
+              {/* Info box */}
               <div className="p-3 bg-vault-sidebar border border-vault-border rounded-xl text-xs text-vault-textMuted leading-relaxed">
-                O acesso será aplicado ao arquivo principal do cofre no Google Drive. O destinatário abre esse mesmo cofre usando esta senha de compartilhamento e vê apenas o escopo permitido.
+                Um arquivo separado e criptografado será criado no Drive. O destinatário abre esse arquivo com a senha de compartilhamento e vê apenas o escopo permitido. Seu cofre principal não é alterado.
               </div>
 
               <div className="flex gap-3 pt-2">
@@ -236,8 +215,8 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
           {step === "sharing" && (
             <div className="text-center py-8">
               <div className="w-12 h-12 rounded-full border-2 border-vault-primary border-t-transparent animate-spin mx-auto mb-4" />
-              <p className="text-vault-text font-medium">Compartilhando...</p>
-              <p className="text-vault-textMuted text-sm mt-1">Atualizando permissões e senha de compartilhamento</p>
+              <p className="text-vault-text font-medium">Criando compartilhamento...</p>
+              <p className="text-vault-textMuted text-sm mt-1">Criptografando e enviando ao Google Drive</p>
             </div>
           )}
 
@@ -254,15 +233,18 @@ export function ShareModal({ target, type, onClose }: ShareModalProps) {
                 </p>
               </div>
               <div className="p-3 bg-vault-warning/10 border border-vault-warning/30 rounded-xl text-left">
-                <p className="text-sm text-vault-warning font-medium">Senha de compartilhamento:</p>
-                <div className="flex items-center gap-2 mt-2">
-                  <code className="text-vault-primary font-mono text-sm bg-vault-input px-3 py-1.5 rounded-lg flex-1">
+                <p className="text-sm text-vault-warning font-medium mb-1">Senha de compartilhamento:</p>
+                <div className="flex items-center gap-2">
+                  <code className="text-vault-primary font-mono text-sm bg-vault-input px-3 py-1.5 rounded-lg flex-1 break-all">
                     {sharePassword}
                   </code>
-                  <button onClick={copyPassword} className="p-2 text-vault-textMuted hover:text-vault-text transition-colors">
+                  <button onClick={copyPassword} className="p-2 text-vault-textMuted hover:text-vault-text transition-colors flex-shrink-0">
                     {copiedPwd ? <Check size={16} className="text-vault-success" /> : <Copy size={16} />}
                   </button>
                 </div>
+                <p className="text-xs text-vault-textMuted mt-2">
+                  Envie esta senha ao destinatário por um canal seguro (ex: mensagem direta).
+                </p>
               </div>
               <button
                 onClick={onClose}

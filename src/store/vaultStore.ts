@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { VaultData, PasswordEntry, PasswordGroup, GoogleToken, ViewMode, ActiveView, VaultPermission, DeletionRequest, SharedSource, SharedScopeType, SharedUser } from "../types/vault";
-import { encryptData, decryptData, decryptVaultEnvelope, encryptVaultEnvelope, createVaultDataKey, createVaultKeySlot, VaultKeySlot } from "../services/crypto";
+import { encryptData, decryptVaultEnvelope, encryptVaultEnvelope, createVaultDataKey, createVaultKeySlot, VaultKeySlot } from "../services/crypto";
 import {
   findVaultFile,
   downloadVaultFile,
@@ -8,6 +8,10 @@ import {
   refreshAccessToken,
   getFileVersion,
   deleteDriveFile,
+  getDriveChangesStartToken,
+  listDriveChanges,
+  createSharedVaultFile,
+  shareFile,
 } from "../services/googleDrive";
 import {
   pickSavePath,
@@ -79,6 +83,7 @@ interface VaultStore {
   googleToken: GoogleToken | null;
   driveFileId: string | null;
   driveRevision: string | null;
+  driveChangesToken: string | null;
   userInfo: { email: string; name: string; picture: string } | null;
 
   // ── Local storage ──────────────────────────────────────────────────────────
@@ -105,6 +110,8 @@ interface VaultStore {
   setUserInfo: (info: { email: string; name: string; picture: string } | null) => void;
   setDriveFileId: (id: string | null) => void;
   setDriveRevision: (revision: string | null) => void;
+  setDriveChangesToken: (token: string | null) => void;
+  initDriveChangesToken: () => Promise<void>;
 
   // ── Role ───────────────────────────────────────────────────────────────────
   currentUserRole: (scopeType?: SharedScopeType, scopeId?: string) => VaultPermission;
@@ -125,7 +132,7 @@ interface VaultStore {
   addVaultPasswordSlot: (id: string, password: string) => Promise<void>;
   mergeSharedEntries: (entries: PasswordEntry[], group?: PasswordGroup | null) => void;
   mergeFromVault: (otherVault: VaultData) => number;
-  addSharedSource: (fileId: string, sharedVault: VaultData, password: string, revision: string | null) => void;
+  addSharedSource: (fileId: string, sharedVault: VaultData, password: string, revision: string | null, openedEnvelope?: { dataKey: string | null; keySlots: import("../services/crypto").VaultKeySlot[] }) => void;
   refreshSharedSources: () => Promise<string | false>;
   syncSharedSource: (sourceId: string) => Promise<void>;
   syncOwnedSharedSourcesFromVault: () => void;
@@ -136,7 +143,8 @@ interface VaultStore {
   saveToLocalFile: (path?: string) => Promise<void>;
   loadFromLocalFile: (path?: string) => Promise<string>;
 
-  // ── Google Drive sync ──────────────────────────────────────────────────────
+  // ── Sync (Changes API) ─────────────────────────────────────────────────────
+  pollDriveChanges: () => Promise<string | false>;
   syncToCloud: () => Promise<void>;
   loadFromCloud: () => Promise<string>;
   refreshFromCloudIfChanged: () => Promise<boolean>;
@@ -161,6 +169,19 @@ interface VaultStore {
   rejectDeletion: (requestId: string) => void;
 
   // ── Sharing / permissions ──────────────────────────────────────────────────
+  /**
+   * Cria um arquivo colaborativo separado (pk-collab-<id>.keep) no Drive,
+   * adiciona a SharedSource ao estado local, e compartilha o arquivo com o colaborador.
+   * Retorna a sharePassword gerada para ser exibida ao usuário.
+   */
+  createSharedDocument: (params: {
+    targetType: SharedScopeType;
+    targetId: string | null;
+    targetTitle: string;
+    collaboratorEmail: string;
+    collaboratorRole: VaultPermission;
+    sharePassword: string;
+  }) => Promise<void>;
   updateSharedUserRole: (email: string, role: VaultPermission, scopeType?: SharedScopeType, scopeId?: string, scopeTitle?: string) => void;
   removeSharedUser: (email: string, scopeType?: SharedScopeType, scopeId?: string) => void;
 
@@ -188,6 +209,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   googleToken: loadPersisted<GoogleToken>("pk_google_token"),
   driveFileId: loadPersisted<string>("pk_drive_file_id"),
   driveRevision: loadPersisted<string>("pk_drive_revision"),
+  driveChangesToken: loadPersisted<string>("pk_drive_changes_token"),
   userInfo: loadPersisted<{ email: string; name: string; picture: string }>("pk_user_info"),
   localVaultPath: loadPersisted<string>("pk_local_vault_path"),
   vault: null,
@@ -230,12 +252,31 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     set({ driveRevision: revision });
   },
 
+  setDriveChangesToken: (token) => {
+    savePersisted("pk_drive_changes_token", token);
+    set({ driveChangesToken: token });
+  },
+
+  initDriveChangesToken: async () => {
+    const { driveChangesToken } = get();
+    if (driveChangesToken) return; // já temos um token, não precisa buscar novo
+    try {
+      const authToken = await get().ensureValidToken();
+      const changesToken = await getDriveChangesStartToken(authToken);
+      savePersisted("pk_drive_changes_token", changesToken);
+      set({ driveChangesToken: changesToken });
+    } catch {
+      // silencioso — o polling vai tentar de novo
+    }
+  },
+
   initFromStorage: async () => {
-    const [googleToken, userInfo, driveFileId, driveRevision, localVaultPath] = await Promise.all([
+    const [googleToken, userInfo, driveFileId, driveRevision, driveChangesToken, localVaultPath] = await Promise.all([
       persistLoad<GoogleToken>("pk_google_token"),
       persistLoad<{ email: string; name: string; picture: string }>("pk_user_info"),
       persistLoad<string>("pk_drive_file_id"),
       persistLoad<string>("pk_drive_revision"),
+      persistLoad<string>("pk_drive_changes_token"),
       persistLoad<string>("pk_local_vault_path"),
     ]);
     set((s) => ({
@@ -243,6 +284,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       userInfo: userInfo ?? s.userInfo,
       driveFileId: driveFileId ?? s.driveFileId,
       driveRevision: driveRevision ?? s.driveRevision,
+      driveChangesToken: driveChangesToken ?? s.driveChangesToken,
       localVaultPath: localVaultPath ?? s.localVaultPath,
     }));
   },
@@ -350,7 +392,17 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   lockVault: () => {
-    set({ isLocked: true, masterPassword: "", vaultDataKey: null, vaultKeySlots: [], vault: null, sharedSources: [], selectedEntryId: null });
+    savePersisted("pk_drive_changes_token", null);
+    set({
+      isLocked: true,
+      masterPassword: "",
+      vaultDataKey: null,
+      vaultKeySlots: [],
+      vault: null,
+      sharedSources: [],
+      selectedEntryId: null,
+      driveChangesToken: null,
+    });
   },
 
   closeVault: () => {
@@ -359,6 +411,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     savePersisted("pk_drive_file_id", null);
     savePersisted("pk_drive_revision", null);
     savePersisted("pk_local_vault_path", null);
+    savePersisted("pk_drive_changes_token", null);
     set({
       isLocked: true,
       masterPassword: "",
@@ -373,6 +426,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       localVaultPath: null,
       driveFileId: null,
       driveRevision: null,
+      driveChangesToken: null,
       syncError: null,
       isDirty: false,
     });
@@ -455,7 +509,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     return newEntriesCount;
   },
 
-  addSharedSource: (fileId, sharedVault, password, revision) => {
+  addSharedSource: (fileId, sharedVault, password, revision, openedEnvelope) => {
     const sourceId = sharedVault.collaboration?.documentId || fileId;
     const owner = sharedVault.owner || "Compartilhado";
     const { userInfo } = get();
@@ -539,6 +593,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             collaboration: sharedVault.collaboration,
             sharedWith: sharedVault.sharedWith ?? [],
             password,
+            dataKey: openedEnvelope?.dataKey ?? null,
+            keySlots: openedEnvelope?.keySlots ?? [],
             revision,
             lastSyncAt: now(),
             updatedBy: owner,
@@ -551,46 +607,88 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     });
   },
 
+  // Mantido por compatibilidade com forceSync — delega para pollDriveChanges
   refreshSharedSources: async () => {
-    const { sharedSources, isDirty, vault } = get();
-    if (sharedSources.length === 0) return false;
-    const token = await get().ensureValidToken();
+    return get().pollDriveChanges();
+  },
+
+  /**
+   * Usa a Drive Changes API para detectar quais arquivos mudaram desde a última
+   * verificação. Só baixa e decripta os arquivos que realmente mudaram.
+   * Muito mais eficiente que verificar a revisão de cada arquivo individualmente.
+   */
+  pollDriveChanges: async () => {
+    const { sharedSources, driveFileId, driveChangesToken } = get();
+    const hasAnything = sharedSources.length > 0 || !!driveFileId;
+    if (!hasAnything) return false;
+
+    let authToken: GoogleToken;
+    try {
+      authToken = await get().ensureValidToken();
+    } catch {
+      return false;
+    }
+
+    // Se não temos changesToken, obter um agora e sair (na próxima rodada detectamos mudanças)
+    if (!driveChangesToken) {
+      await get().initDriveChangesToken();
+      return false;
+    }
+
+    let changedFileIds: string[];
+    let nextPageToken: string;
+    try {
+      ({ changedFileIds, nextPageToken } = await listDriveChanges(authToken, driveChangesToken));
+    } catch {
+      return false;
+    }
+
+    // Persistir o próximo token mesmo que não haja mudanças relevantes
+    if (nextPageToken !== driveChangesToken) {
+      savePersisted("pk_drive_changes_token", nextPageToken);
+      set({ driveChangesToken: nextPageToken });
+    }
+
+    if (changedFileIds.length === 0) return false;
+
+    let notice: string | false = false;
+
+    // ── Verificar cofre principal ────────────────────────────────────────────
+    if (driveFileId && changedFileIds.includes(driveFileId)) {
+      const didUpdate = await get().refreshFromCloudIfChanged();
+      if (didUpdate) notice = "Cofre principal atualizado";
+    }
+
+    // ── Verificar fontes compartilhadas ──────────────────────────────────────
     for (const source of sharedSources) {
+      if (!changedFileIds.includes(source.fileId)) continue;
       try {
-        const revision = await getFileVersion(token, source.fileId);
-        if (!revision || revision === source.revision) continue;
-        const encrypted = await downloadVaultFile(token, source.fileId);
-        const json = await decryptData(encrypted, source.password);
-
-        // Check for potential conflicts: if vault is dirty, we might be overwriting local changes
-        const hasLocalChanges = isDirty && !!vault;
-        const remoteData = JSON.parse(json) as VaultData;
-
-        get().addSharedSource(source.fileId, remoteData, source.password, revision);
-
-        // Return a notice string indicating who updated the shared source
-        const displayName = source.updatedBy || source.owner;
-        let notice = `Compartilhamento atualizado por ${displayName}`;
-
-        // If there were local changes, add a warning about potential overwrite
-        if (hasLocalChanges) {
-          notice += ` (alterações locais podem ter sido sobrescritas)`;
-        }
-
-        return notice;
+        const encrypted = await downloadVaultFile(authToken, source.fileId);
+        // decryptVaultEnvelope suporta tanto v2 (envelope multi-slot) quanto legado
+        const opened = await decryptVaultEnvelope(encrypted, source.password);
+        const remoteData = JSON.parse(opened.plaintext) as VaultData;
+        const revision = await getFileVersion(authToken, source.fileId);
+        get().addSharedSource(source.fileId, remoteData, source.password, revision, {
+          dataKey: opened.dataKey,
+          keySlots: opened.keySlots,
+        });
+        const displayName = remoteData.owner || source.owner;
+        notice = `"${source.name}" atualizado por ${displayName}`;
       } catch (err) {
-        if (!isRevokedDriveError(err)) throw err;
-        set((s) => ({
-          sharedSources: s.sharedSources.filter((item) => item.id !== source.id),
-          selectedEntryId: s.selectedEntryId?.includes(`shared:${source.id}:`) ? null : s.selectedEntryId,
-          selectedGroupId: s.selectedGroupId?.includes(`shared:${source.id}:`) ? null : s.selectedGroupId,
-          activeView: s.selectedGroupId?.includes(`shared:${source.id}:`) ? "all" : s.activeView,
-        }));
-        // Return a notice for the removed source
-        return `Compartilhamento removido: ${source.name}`;
+        if (isRevokedDriveError(err)) {
+          set((s) => ({
+            sharedSources: s.sharedSources.filter((item) => item.id !== source.id),
+            selectedEntryId: s.selectedEntryId?.includes(`shared:${source.id}:`) ? null : s.selectedEntryId,
+            selectedGroupId: s.selectedGroupId?.includes(`shared:${source.id}:`) ? null : s.selectedGroupId,
+            activeView: s.selectedGroupId?.includes(`shared:${source.id}:`) ? "all" : s.activeView,
+          }));
+          notice = `Compartilhamento removido: ${source.name}`;
+        }
+        // outros erros: ignorar silenciosamente para não interromper o loop
       }
     }
-    return false;
+
+    return notice;
   },
 
   syncOwnedSharedSourcesFromVault: () => {
@@ -693,7 +791,16 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       groups,
       entries,
     };
-    const encrypted = await encryptData(JSON.stringify(sharedVault), source.password);
+
+    // Usar envelope v2 com os keySlots existentes (preserva senhas de todos os colaboradores).
+    // Se não temos keySlots (arquivo criado no formato legado), fazer fallback para encryptData.
+    let encrypted: string;
+    if (source.dataKey && source.keySlots && source.keySlots.length > 0) {
+      encrypted = await encryptVaultEnvelope(JSON.stringify(sharedVault), source.dataKey, source.keySlots);
+    } else {
+      encrypted = await encryptData(JSON.stringify(sharedVault), source.password);
+    }
+
     await uploadVaultFile(token, encrypted, source.fileId);
     const revision = await getFileVersion(token, source.fileId);
     set((s) => ({
@@ -894,8 +1001,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     const revision = await getFileVersion(token, driveFileId);
     if (!revision || revision === driveRevision) return false;
     const encrypted = await downloadVaultFile(token, driveFileId);
-    const json = await decryptData(encrypted, masterPassword);
-    const raw = JSON.parse(json);
+    const opened = await decryptVaultEnvelope(encrypted, masterPassword);
+    const raw = JSON.parse(opened.plaintext);
     const vault: VaultData = {
       sharedWith: [],
       deletionRequests: [],
@@ -903,7 +1010,14 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       ...raw,
     };
     savePersisted("pk_drive_revision", revision);
-    set({ vault, driveRevision: revision, lastSyncAt: now(), syncError: null });
+    set({
+      vault,
+      vaultDataKey: opened.dataKey,
+      vaultKeySlots: opened.keySlots,
+      driveRevision: revision,
+      lastSyncAt: now(),
+      syncError: null,
+    });
     return true;
   },
 
@@ -1103,6 +1217,80 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         : s.vault,
       isDirty: true,
     }));
+  },
+
+  createSharedDocument: async ({ targetType, targetId, targetTitle, collaboratorEmail, collaboratorRole, sharePassword }) => {
+    const { vault, userInfo } = get();
+    if (!vault) throw new Error("Cofre não está desbloqueado");
+    if (!sharePassword) throw new Error("Senha de compartilhamento é obrigatória");
+
+    const token = await get().ensureValidToken();
+    const collaborator = collaboratorEmail.trim().toLowerCase();
+    const documentId = generateId();
+    const fileName = `pk-collab-${documentId}.keep`;
+
+    // ── Montar VaultData do documento compartilhado ────────────────────────
+    const collaboration = {
+      documentId,
+      type: targetType,
+      title: targetTitle,
+      createdFromId: targetId ?? undefined,
+      createdAt: now(),
+    };
+
+    let groups: PasswordGroup[] = [];
+    let entries: PasswordEntry[] = [];
+
+    if (targetType === "vault") {
+      groups = vault.groups;
+      entries = vault.entries;
+    } else if (targetType === "group" && targetId) {
+      const group = vault.groups.find((g) => g.id === targetId);
+      if (group) groups = [group];
+      entries = vault.entries.filter((e) => e.groupId === targetId);
+    } else if (targetType === "entry" && targetId) {
+      const entry = vault.entries.find((e) => e.id === targetId);
+      if (entry) entries = [entry];
+    }
+
+    const sharedVault: VaultData = {
+      version: "1.0",
+      owner: userInfo?.email ?? vault.owner,
+      collaboration,
+      sharedWith: [{ email: collaborator, role: collaboratorRole, scopeType: targetType, scopeId: targetId ?? undefined, scopeTitle: targetTitle, addedAt: now() }],
+      deletionRequests: [],
+      groups,
+      entries,
+    };
+
+    // ── Criptografar com envelope v2 (multi-slot: owner + collaborator) ────
+    const dataKey = createVaultDataKey();
+    const ownerPassword = get().masterPassword;
+    const [ownerSlot, collabSlot] = await Promise.all([
+      createVaultKeySlot("owner", ownerPassword, dataKey),
+      createVaultKeySlot(`collab:${collaborator}`, sharePassword, dataKey),
+    ]);
+    const keySlots: VaultKeySlot[] = [ownerSlot, collabSlot];
+    const encrypted = await encryptVaultEnvelope(JSON.stringify(sharedVault), dataKey, keySlots);
+
+    // ── Fazer upload do arquivo colaborativo ─────────────────────────────
+    const fileId = await createSharedVaultFile(token, encrypted, fileName);
+
+    // ── Compartilhar via Drive API ────────────────────────────────────────
+    await shareFile(
+      token,
+      fileId,
+      collaborator,
+      collaboratorRole === "reader" ? "reader" : "writer",
+      `Você recebeu acesso ao cofre de senhas "${targetTitle}". Abra o app Password Keeper e use a opção "Abrir compartilhamento" com a senha fornecida pelo proprietário.`,
+    );
+
+    // ── Registrar SharedSource no estado local (proprietário) ─────────────
+    const revision = await getFileVersion(token, fileId);
+    get().addSharedSource(fileId, sharedVault, ownerPassword, revision, { dataKey, keySlots });
+
+    // ── Inicializar changesToken se ainda não temos ────────────────────────
+    await get().initDriveChangesToken();
   },
 
   updateSharedUserRole: (email, role, scopeType = "vault", scopeId, scopeTitle) => {

@@ -1,4 +1,4 @@
-package com.passwordkeeper.app
+package com.passwordkeeper.vault
 
 import android.content.Context
 import android.net.ConnectivityManager

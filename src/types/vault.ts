@@ -75,6 +75,10 @@ export interface SharedSource {
   collaboration?: VaultCollaboration;
   sharedWith: SharedUser[];
   password: string;
+  /** dataKey base64 para re-encriptar o arquivo compartilhado (envelope v2) */
+  dataKey?: string | null;
+  /** keySlots do envelope do arquivo compartilhado */
+  keySlots?: import("../services/crypto").VaultKeySlot[];
   revision: string | null;
   lastSyncAt: string | null;
   updatedBy?: string;
